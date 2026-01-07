@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  rl-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rl-ad-optimization
+    ports:
+      - "8000:8000"
+    environment:
+      # Logging
+      - LOG_LEVEL=INFO
+      # MAB параметры (опционально, можно переопределить)
+      - MAB_EPSILON=0.1
+      - MAB_EPSILON_DECAY=0.999
+      - MAB_MIN_EPSILON=0.01
+      - MAB_PENALTY_WEIGHT=0.1
+      # Таймаут сессии (в минутах)
+      - SESSION_INACTIVITY_TIMEOUT=10
+    volumes:
+      # Монтируем директорию для сохранения чекпоинтов MAB (опционально)
+      - ./checkpoints:/app/checkpoints
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - rl-network
+
+networks:
+  rl-network:
+    driver: bridge
