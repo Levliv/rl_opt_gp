@@ -3,6 +3,11 @@ from typing import Dict
 import logging
 from datetime import datetime, timedelta
 import asyncio
+import pickle
+
+from catboost import CatBoostClassifier, Pool
+from app.ml_tools import state_fe_standart, reward
+from app.ab_user_splitter import user_splitter
 
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
 from app.rl_agent import RLAgent, SessionState
@@ -32,6 +37,11 @@ mab_agent = RLAgent(
     penalty_weight=0.1  # Штраф: 0.1 * coefficient за каждый просмотр
 )
 
+with open("app/ml_models_pkl/ad_model_drop_device.pkl", "rb") as file:
+    ad_prob_model = pickle.load(file)
+
+ad_prob_model_features = ad_prob_model.feature_names_
+
 # Хранилище активных сессий: session_id -> SessionState
 active_sessions: Dict[int, SessionState] = {}
 
@@ -41,6 +51,8 @@ session_coefficients: Dict[int, Dict[int, float]] = {}
 
 # Таймаут неактивности сессии (в минутах)
 SESSION_INACTIVITY_TIMEOUT = 10
+GROUPS = ["default", "mab", "uplift"]
+SALT = "v1"
 
 
 def close_session_internal(session_id: int) -> Dict:
@@ -150,32 +162,68 @@ async def handle_init_event(event: InitEvent):
     session.add_init_event(event.model_dump())
     active_sessions[event.session_id] = session
 
-    # MAB выбирает коэффициент
-    coefficient = mab_agent.select_action()
-
-    # Инициализируем хранилище коэффициентов для этой сессии
-    session_coefficients[event.session_id] = {0: coefficient}
-
-    # Сохраняем коэффициент в сессии для финального обучения
-    session.coefficients_used.add(coefficient)
-
-    # Дефолтное значение награды (будет обновлено при первом snapshot)
-    default_reward = 1000
-    recommended_reward = int(coefficient * default_reward)
-
-    logger.info(
-        f"Session {event.session_id} initialized: coefficient={coefficient}, "
-        f"default_reward={default_reward}, recommended_reward={recommended_reward}"
+    split_group_id = user_splitter(
+        user_id=event.appmetrica_device_id,
+        n_buckets=len(GROUPS),
+        salt=SALT,
     )
+    reward_source = GROUPS[split_group_id]
 
-    return AdRewardResponse(
-        session_id=event.session_id,
-        appmetrica_device_id=event.appmetrica_device_id,
-        reward_source="mab",
-        recommended_coefficient=coefficient,
-        recommended_reward=recommended_reward,
-        game_minute=0
-    )
+    if reward_source == "mab":
+        # MAB выбирает коэффициент
+        coefficient = mab_agent.select_action()
+
+        # Инициализируем хранилище коэффициентов для этой сессии
+        session_coefficients[event.session_id] = {0: coefficient}
+
+        # Сохраняем коэффициент в сессии для финального обучения
+        session.coefficients_used.add(coefficient)
+
+        # Дефолтное значение награды (будет обновлено при первом snapshot)
+        default_reward = 1000
+        recommended_reward = int(coefficient * default_reward)
+
+        logger.info(
+            f"Session {event.session_id} initialized: coefficient={coefficient}, "
+            f"default_reward={default_reward}, recommended_reward={recommended_reward}"
+        )
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source="mab",
+            recommended_coefficient=coefficient,
+            recommended_reward=recommended_reward,
+            game_minute=0
+        )
+    
+    elif reward_source == "uplift":
+        default_reward = 1000
+        coefficient = 1
+        recommended_reward = int(coefficient * default_reward)
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source="uplift",
+            recommended_coefficient=coefficient,
+            recommended_reward=recommended_reward,
+            game_minute=0
+        )
+    
+    elif reward_source == "uplidefaultft":
+        default_reward = 1000
+        coefficient = 1
+        recommended_reward = int(coefficient * default_reward)
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source="uplift",
+            recommended_coefficient=coefficient,
+            recommended_reward=recommended_reward,
+            game_minute=0
+        )
 
 
 @app.post("/events/snapshot", response_model=AdRewardResponse)
@@ -198,34 +246,83 @@ async def handle_snapshot_event(event: UserSnapshotActiveState, background_tasks
     # Добавляем snapshot в историю (обучение MAB происходит в конце сессии)
     session.add_snapshot(event.model_dump())
 
-    # MAB выбирает коэффициент для следующей минуты
-    coefficient = mab_agent.select_action()
-
-    # Рассчитываем рекомендованную награду = coefficient * money_ad_reward_calculate
-    base_reward = event.money_ad_reward_calculate
-    recommended_reward = int(coefficient * base_reward)
-
-    # Сохраняем коэффициент с привязкой к минуте
-    if event.session_id not in session_coefficients:
-        session_coefficients[event.session_id] = {}
-    session_coefficients[event.session_id][event.game_minute] = coefficient
-
-    # Сохраняем коэффициент в сессии для финального обучения
-    session.coefficients_used.add(coefficient)
-
-    logger.info(
-        f"Session {event.session_id}, minute {event.game_minute}: "
-        f"coefficient={coefficient}, base_reward={base_reward}, recommended_reward={recommended_reward}"
+    split_group_id = user_splitter(
+        user_id=event.appmetrica_device_id,
+        n_buckets=len(GROUPS),
+        salt=SALT,
     )
+    reward_source = GROUPS[split_group_id]
 
-    return AdRewardResponse(
-        session_id=event.session_id,
-        appmetrica_device_id=event.appmetrica_device_id,
-        reward_source="mab",
-        recommended_coefficient=coefficient,
-        recommended_reward=recommended_reward,
-        game_minute=event.game_minute
-    )
+    if reward_source == "mab":
+        # MAB выбирает коэффициент для следующей минуты
+        coefficient = mab_agent.select_action()
+
+        # Рассчитываем рекомендованную награду = coefficient * money_ad_reward_calculate
+        base_reward = event.money_ad_reward_calculate
+        recommended_reward = int(coefficient * base_reward)
+
+        # Сохраняем коэффициент с привязкой к минуте
+        if event.session_id not in session_coefficients:
+            session_coefficients[event.session_id] = {}
+        session_coefficients[event.session_id][event.game_minute] = coefficient
+
+        # Сохраняем коэффициент в сессии для финального обучения
+        session.coefficients_used.add(coefficient)
+
+        logger.info(
+            f"Session {event.session_id}, minute {event.game_minute}: "
+            f"coefficient={coefficient}, base_reward={base_reward}, recommended_reward={recommended_reward}"
+        )
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source="mab",
+            recommended_coefficient=coefficient,
+            recommended_reward=recommended_reward,
+            game_minute=event.game_minute
+        )
+    
+    elif reward_source == "uplift":
+
+        state = event.model_dump() | session.init_data
+        fe_state = state_fe_standart(state)
+
+        prob = ad_prob_model.predict_proba(
+            Pool(
+                [[fe_state.get(f) for f in ad_prob_model_features]],
+                feature_names=ad_prob_model_features
+            )
+        )[:, 1][0]
+
+        coefficient = reward(prob)
+        base_reward = event.money_ad_reward_calculate
+        recommended_reward = int(coefficient * base_reward)
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source="uplift",
+            recommended_coefficient=coefficient,
+            recommended_reward=recommended_reward,
+            game_minute=event.game_minute
+        )
+    
+    elif reward_source == "default":
+
+        coefficient = 1
+        base_reward = event.money_ad_reward_calculate
+        recommended_reward = int(coefficient * base_reward)
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source="default",
+            recommended_coefficient=coefficient,
+            recommended_reward=recommended_reward,
+            game_minute=event.game_minute
+        )
+
 
 
 @app.post("/events/reward")
