@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from datetime import datetime
 from typing import Literal
 
@@ -13,6 +13,10 @@ class BaseEvent(BaseModel):
     country_iso_code: str
     appmetrica_device_id: int = Field(..., ge=0)
     session_id: int
+
+    @validator('appmetrica_device_id', pre=True)
+    def parse_int_str(cls, v):
+        return int(v)
 
 
 class InitEvent(BaseEvent):
@@ -35,10 +39,10 @@ class UserSnapshotActiveState(BaseEvent):
     ad_cnt: int = Field(..., ge=0)
     death_cnt: int = Field(..., ge=0)
     money_balance: float = Field(..., ge=0)
-    health_ratio: float = Field(..., ge=0, le=1)
+    health_ratio: float = Field(..., le=1)
     kills_last_minute: int = Field(..., ge=0)
     boss_kills_last_minute: int = Field(..., ge=0)
-    money_revenue_last_minute: float = Field(..., ge=0)
+    money_revenue_last_minute: float
     shop_activity_last_minute: int = Field(..., ge=0)
     health_spent_last_minute: int = Field(..., ge=0)
     damage: float = Field(..., ge=0)
@@ -60,6 +64,13 @@ class UserSnapshotActiveState(BaseEvent):
     upgrade_activity_last_minute: int = Field(..., ge=0)
     player_dps: float = Field(..., ge=0)
     health_change_last_minute: float
+    hard_balance: float = Field(0, ge=0)
+    hard_revenue_last_minute: float = Field(0, ge=0)
+    itemtoken_ad_reward_calculate: float = Field(0, ge=0)
+
+    @validator('money_balance', 'player_dps', pre=True)
+    def parse_float_str(cls, v):
+        return float(v)
 
 
 class RewardEvent(BaseEvent):
