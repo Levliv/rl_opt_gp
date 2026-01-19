@@ -231,14 +231,17 @@ async def handle_snapshot_event(event: UserSnapshotActiveState, background_tasks
 @app.post("/events/reward")
 async def handle_reward_event(event: RewardEvent):
     """
-    Обрабатывает reward_event - события связанные с рекламой
-    (ButtonShown, CLICKED, PAID).
+    Обрабатывает reward event - события рекламы (CLICKED/IGNORED).
+
+    CLICKED - пользователь принял оффер и посмотрел рекламу
+    IGNORED - пользователь не принял оффер на просмотр рекламы
 
     IMPORTANT: НЕ обновляет MAB здесь! Обучение происходит в конце сессии.
     """
     logger.info(
         f"Reward event received: session {event.session_id}, "
-        f"type {event.reward_type}, minute {event.game_minute}"
+        f"type {event.event_type}, source {event.reward_source}, "
+        f"coefficient {event.recommended_coefficient}, reward {event.recommended_reward}"
     )
 
     # Проверяем существование сессии
@@ -249,8 +252,8 @@ async def handle_reward_event(event: RewardEvent):
     session = active_sessions[event.session_id]
     session.add_reward_event(event.model_dump())
 
-    # При PAID событии - просто логируем (обучение MAB будет в конце сессии)
-    if event.reward_type == "PAID":
+    # При CLICKED событии - увеличиваем ��четчик просмотров
+    if event.event_type == "CLICKED":
         logger.info(
             f"Ad watched! Session {event.session_id}, "
             f"total ads: {session.total_ads_watched}"
@@ -259,7 +262,7 @@ async def handle_reward_event(event: RewardEvent):
     return {
         "status": "ok",
         "session_id": event.session_id,
-        "event_type": event.reward_type,
+        "event_type": event.event_type,
         "total_ads_watched": session.total_ads_watched
     }
 

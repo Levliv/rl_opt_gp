@@ -39,10 +39,11 @@ class SessionState:
         self.last_activity_time = datetime.now()
 
     def add_reward_event(self, event_data: Dict):
-        """Добавляет событие рекламы"""
+        """Добавляет событие рекламы (CLICKED/IGNORED)"""
         from datetime import datetime
         self.reward_events.append(event_data)
-        if event_data.get('reward_type') == 'PAID':
+        # CLICKED означает что пользователь посмотрел рекламу
+        if event_data.get('event_type') == 'CLICKED':
             self.total_ads_watched += 1
         self.last_activity_time = datetime.now()
 
