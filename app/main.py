@@ -209,7 +209,7 @@ async def handle_init_event(event: InitEvent):
             game_minute=0
         )
     
-    elif reward_source == "uplidefaultft":
+    elif reward_source == "default":
         default_reward = 1000
         coefficient = 1
         recommended_reward = int(coefficient * default_reward)
