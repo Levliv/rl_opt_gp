@@ -4,15 +4,14 @@
 
 ## Описание
 
-Сервис использует **Epsilon-Greedy Multi-Armed Bandit** для динамической оптимизации коэффициента награды за просмотр рекламы с целью максимизации количества просмотренных реклам за игровую сессию.
+Сервис использует **Epsilon-Greedy Multi-Armed Bandit** для динамической оптимизации коэффициента награды за просмотр рекламы. Обучается на каждом единичном событии CLICKED/IGNORED.
 
 ### Основные возможности
 
-- **Обработка игровых событий**: init_event, user_snapshot_active_state, reward_event
+- **Обработка игровых событий**: init_event, user_snapshot_active_state, reward_event (CLICKED/IGNORED)
 - **Динамическая оптимизация коэффициентов**: MAB агент подбирает оптимальный коэффициент к базовой награде игрока
+- **Обучение на единичных событиях**: MAB обновляется немедленно при получении REWARD события
 - **Учет экономики игры**: штраф за высокие коэффициенты для баланса игровой экономики
-- **Быстрое обучение**: Бандитный алгоритм быстро находит оптимальную стратегию
-- **Автоматическое управление сессиями**: закрытие неактивных сессий через 10 минут
 - **Thread-safe**: поддержка конкурентных запросов от нескольких игроков
 - **RESTful API**: FastAPI для интеграции с игровым клиентом
 - **Docker**: готовая контейнеризация для развертывания
@@ -26,7 +25,6 @@ rl_opt_gp/
 │   ├── main.py           # FastAPI приложение и эндпоинты
 │   ├── models.py         # Pydantic модели для событий
 │   └── rl_agent.py       # Multi-Armed Bandit агент
-├── example_client.py     # Тестовый клиент для симуляции
 ├── Dockerfile            # Docker образ
 ├── docker-compose.yml    # Docker Compose конфигурация
 ├── .dockerignore         # Исключения для Docker
@@ -88,7 +86,7 @@ curl http://localhost:8000/health
 
 **POST** `/events/init`
 
-Отправляется при запуске игры. Создает новую игровую сессию и возвращает первый рекомендованный размер награды.
+Отправляется при запуске игры. Возвращает первый рекомендованный размер награды на основе дефолтного значения (1000).
 
 **Request Body:**
 ```json
@@ -117,7 +115,9 @@ curl http://localhost:8000/health
 {
   "session_id": 987654321,
   "appmetrica_device_id": 123456789,
-  "recommended_reward": 250,
+  "reward_source": "mab",
+  "recommended_coefficient": 1.5,
+  "recommended_reward": 1500,
   "game_minute": 0
 }
 ```
@@ -178,6 +178,8 @@ curl http://localhost:8000/health
 {
   "session_id": 987654321,
   "appmetrica_device_id": 123456789,
+  "reward_source": "mab",
+  "recommended_coefficient": 1.5,
   "recommended_reward": 1500,
   "game_minute": 1
 }
@@ -187,11 +189,13 @@ curl http://localhost:8000/health
 
 Например: `1500 = 1.5 * 1000`
 
-### 3. События рекламы
+### 3. События рекламы (REWARD)
 
 **POST** `/events/reward`
 
-Отправляется при событиях связанных с рекламой (ButtonShown, CLICKED, PAID).
+Отправляется когда пользователь принимает (CLICKED) или отклоняет (IGNORED) оффер на просмотр рекламы.
+
+**ВАЖНО**: Это событие обучает MAB агента немедленно!
 
 **Request Body:**
 ```json
@@ -204,50 +208,35 @@ curl http://localhost:8000/health
   "country_iso_code": "RU",
   "appmetrica_device_id": 123456789,
   "session_id": 987654321,
-  "reward_type": "PAID",
-  "game_minute": 1
+  "event_type": "CLICKED",
+  "reward_type": "Money",
+  "PlayTimeMinutes": 5,
+  "DaySinceInstall": 10,
+  "reward_source": "mab",
+  "recommended_coefficient": 1.5,
+  "recommended_reward": 1500.0
 }
 ```
 
 **Типы событий:**
-- `ButtonShown` - кнопка показа рекламы отображена игроку
-- `CLICKED` - пользователь нажал на кнопку
-- `PAID` - реклама успешно просмотрена, награда начислена
+- `CLICKED` - пользователь принял оффер и посмотрел рекламу (reward = 1.0 - penalty)
+- `IGNORED` - пользователь отклонил оффер (reward = 0.0 - penalty)
 
 **Response:**
 ```json
 {
   "status": "ok",
   "session_id": 987654321,
-  "event_type": "PAID",
-  "total_ads_watched": 3
+  "event_type": "CLICKED",
+  "mab_updated": true
 }
 ```
 
-### 4. Закрытие сессии
-
-**DELETE** `/sessions/{session_id}`
-
-Вручную закрывает сессию и обучает MAB агента на основе собранных данных.
-
-**Примечание**: Сессии автоматически закрываются при отсутствии активности более 10 минут.
-
-**Response:**
-```json
-{
-  "status": "session_closed",
-  "session_id": 987654321,
-  "total_ads_watched": 5
-}
-```
-
-### 5. Вспомогательные эндпоинты
+### 4. Вспомогательные эндпоинты
 
 **GET** `/` - Информация о сервисе и текущей статистике MAB
 
 **GET** `/health` - Health check для мониторинга
-
-**GET** `/sessions` - Список активных сессий с временем последней активности
 
 **GET** `/agent/stats` - Детальная статистика MAB агента:
 ```json
@@ -275,11 +264,11 @@ curl http://localhost:8000/health
 1. **Arms (Руки)**: 13 возможных коэффициентов: `[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]`
    - Каждая рука отслеживает: количество выборов, общую награду, среднюю награду
 
-2. **Reward (Награда)**: Рассчитывается по формуле с учетом штрафа за высокие коэффициенты
+2. **Reward (Награда)**: Рассчитывается на каждом REWARD событии с учетом штрафа
    ```
-   reward = total_ads_watched - (penalty_weight * coefficient)
+   CLICKED: reward = 1.0 - (penalty_weight * coefficient)
+   IGNORED: reward = 0.0 - (penalty_weight * coefficient)
    ```
-   - `total_ads_watched` - количество просмотренных реклам за сессию
    - `penalty_weight = 0.1` - вес штрафа (настраивается)
    - Штраф нужен для баланса игровой экономики
 
@@ -288,39 +277,33 @@ curl http://localhost:8000/health
    - **Exploitation (90%)**: выбор коэффициента с максимальной средней наградой
    - Epsilon постепенно уменьшается (decay=0.999) до минимума (1%)
 
-4. **Learning (Обучение)**: Обновление происходит при закрытии сессии
-   - Обновляются все коэффициенты, использованные в сессии
-   - Награда = суммарное количество просмотренных реклам минус штраф
-   - Thread-safe обновление для конкурентных сессий
+4. **Learning (Обучение)**: Обновление происходит немедленно при REWARD событии
+   - MAB получает coefficient и результат (CLICKED/IGNORED)
+   - Обновляется статистика соответствующего arm
+   - Epsilon уменьшается
+   - Thread-safe обновление для конкурентных запросов
 
 ### Пример расчета reward
 
 ```
-Сессия использовала коэффициент 2.0
-Пользователь посмотрел 5 реклам за сессию
+CLICKED с коэффициентом 1.5:
+Reward = 1.0 - (0.1 * 1.5) = 1.0 - 0.15 = 0.85
 
-Reward = 5 - (0.1 * 2.0) = 5 - 0.2 = 4.8
+IGNORED с коэффициентом 8.0:
+Reward = 0.0 - (0.1 * 8.0) = 0.0 - 0.8 = -0.8
 ```
 
-Если коэффициент был 8.0:
-```
-Reward = 5 - (0.1 * 8.0) = 5 - 0.8 = 4.2
-```
+Таким образом:
+- Высокие коэффициенты с CLICKED дают меньший reward из-за штрафа
+- IGNORED всегда дает отрицательный reward
+- Алгоритм балансирует между конверсией и экономикой
 
-Таким образом, алгоритм балансирует между конверсией (количество просмотров) и экономикой (размер награды).
-
-### Автоматическое закрытие сессий
-
-Фоновая задача проверяет каждые 60 секунд все активные сессии:
-- Если сессия неактивна более 10 минут - автоматически закрывается
-- При закрытии происходит обучение MAB на основе собранных данных
-- Параметр `SESSION_INACTIVITY_TIMEOUT` настраивается в `docker-compose.yml`
-
-### Почему Multi-Armed Bandit?
+### Преимущества текущей реализации
 
 **Преимущества**:
-- **Простота**: Не требует сложного моделирования состояний игрока
-- **Быстрая сходимость**: Находит оптимальный коэффициент за несколько десятков сессий
+- **Простота**: Нет сложного управления сессиями
+- **Немедленное обучение**: Обратная связь в режиме реального времени
+- **Быстрая сходимость**: Находит оптимальный коэффициент за несколько десятков событий
 - **Эффективность**: Идеально подходит для A/B тестирования коэффициентов
 - **Адаптивность**: Автоматически балансирует exploration и exploitation
 
@@ -339,13 +322,13 @@ MultiArmedBandit(
 ### Пример обучения
 
 ```
-Session 1:  ε=0.100, coefficient=0.5 (exploration), ads=3, reward=2.95, avg=2.950
-Session 5:  ε=0.096, coefficient=1.5 (exploitation), ads=4, reward=3.85, avg=3.425
-Session 10: ε=0.090, coefficient=1.5 (exploitation), ads=5, reward=4.85, avg=4.012
-Session 50: ε=0.061, coefficient=1.5 (exploitation), ads=6, reward=5.85, avg=4.892
+Event 1:  ε=0.100, coefficient=0.5 (exploration), CLICKED, reward=0.95, avg=0.950
+Event 5:  ε=0.096, coefficient=1.5 (exploitation), CLICKED, reward=0.85, avg=0.890
+Event 10: ε=0.090, coefficient=1.5 (exploitation), IGNORED, reward=-0.15, avg=0.620
+Event 50: ε=0.061, coefficient=1.5 (exploitation), CLICKED, reward=0.85, avg=0.742
 ```
 
-После ~100 сессий агент стабилизируется на оптимальном коэффициенте.
+После ~100 событий агент стабилизируется на оптимальном коэффициенте.
 
 ## Примеры использования
 
@@ -357,30 +340,7 @@ from datetime import datetime
 
 BASE_URL = "http://localhost:8000"
 
-# 1. Инициализация сессии
-init_event = {
-    "os_name": "iOS",
-    "os_version": "16.0",
-    "device_manufacturer": "Apple",
-    "event_datetime": datetime.now().isoformat(),
-    "connection_type": "wifi",
-    "country_iso_code": "RU",
-    "appmetrica_device_id": 123456789,
-    "session_id": 987654321,
-    "session_cnt": 10,
-    "avg_playtime_lifetime": 1800.5,
-    "hours_since_last_game": 24,
-    "days_since_install": 30,
-    "inapp_cnt": 2,
-    "ad_views_cnt": 50,
-    "global_death_count": 100,
-    "last_session_playtime": 45
-}
-
-response = requests.post(f"{BASE_URL}/events/init", json=init_event)
-print("Recommended reward:", response.json()["recommended_reward"])
-
-# 2. Отправка snapshot каждую минуту
+# 1. Отправка snapshot события
 snapshot_event = {
     "os_name": "iOS",
     "os_version": "16.0",
@@ -391,14 +351,41 @@ snapshot_event = {
     "appmetrica_device_id": 123456789,
     "session_id": 987654321,
     "game_minute": 1,
-    # ... остальные поля из примера выше
-    "money_ad_reward_calculate": 1000
+    "ad_cnt": 0,
+    "death_cnt": 0,
+    "money_balance": 1000.0,
+    "health_ratio": 0.8,
+    "kills_last_minute": 10,
+    "boss_kills_last_minute": 0,
+    "money_revenue_last_minute": 500.0,
+    "shop_activity_last_minute": 1,
+    "health_spent_last_minute": 50,
+    "damage": 100.5,
+    "health": 200.0,
+    "regen": 5.0,
+    "damage_lvl": 3,
+    "health_lvl": 2,
+    "regen_lvl": 1,
+    "speed_lvl": 2,
+    "critical_chance_lvl": 1,
+    "critical_mult_lvl": 0,
+    "last_boss": 1,
+    "hardness_calculate": 0.5,
+    "money_ad_reward_calculate": 1000,
+    "itemtoken_balance": 10,
+    "itemtoken_revenue_last_minute": 2,
+    "sharpeningstone_balance": 5,
+    "sharpeningstone_revenue_last_minute": 1,
+    "upgrade_activity_last_minute": 3,
+    "player_dps": 150.5,
+    "health_change_last_minute": -20.0
 }
 
 response = requests.post(f"{BASE_URL}/events/snapshot", json=snapshot_event)
-print("New recommended reward:", response.json()["recommended_reward"])
+recommendation = response.json()
+print("Recommended reward:", recommendation["recommended_reward"])
 
-# 3. Отправка события просмотра рекламы
+# 2. Отправка CLICKED события (обучение MAB)
 reward_event = {
     "os_name": "iOS",
     "os_version": "16.0",
@@ -408,16 +395,23 @@ reward_event = {
     "country_iso_code": "RU",
     "appmetrica_device_id": 123456789,
     "session_id": 987654321,
-    "reward_type": "PAID",
-    "game_minute": 1
+    "event_type": "CLICKED",
+    "reward_type": "Money",
+    "PlayTimeMinutes": 5,
+    "DaySinceInstall": 10,
+    "reward_source": recommendation["reward_source"],
+    "recommended_coefficient": recommendation["recommended_coefficient"],
+    "recommended_reward": float(recommendation["recommended_reward"])
 }
 
 response = requests.post(f"{BASE_URL}/events/reward", json=reward_event)
-print("Total ads watched:", response.json()["total_ads_watched"])
+print("MAB updated:", response.json()["mab_updated"])
 
-# 4. Закрытие сессии
-response = requests.delete(f"{BASE_URL}/sessions/987654321")
-print("Session closed:", response.json())
+# 3. Получить статистику MAB
+response = requests.get(f"{BASE_URL}/agent/stats")
+stats = response.json()
+print(f"Best coefficient: {stats['best_arm']}")
+print(f"Average reward: {stats['avg_reward']:.3f}")
 ```
 
 ### cURL
@@ -426,19 +420,18 @@ print("Session closed:", response.json())
 # Health check
 curl http://localhost:8000/health
 
-# Инициализация сессии
-curl -X POST "http://localhost:8000/events/init" \
+# Отправка snapshot события
+curl -X POST "http://localhost:8000/events/snapshot" \
   -H "Content-Type: application/json" \
-  -d '{"os_name":"iOS","os_version":"16.0","device_manufacturer":"Apple","event_datetime":"2026-01-07T12:00:00","connection_type":"wifi","country_iso_code":"RU","appmetrica_device_id":123456789,"session_id":987654321,"session_cnt":10,"avg_playtime_lifetime":1800.5,"hours_since_last_game":24,"days_since_install":30,"inapp_cnt":2,"ad_views_cnt":50,"global_death_count":100,"last_session_playtime":45}'
+  -d '{"os_name":"iOS","os_version":"16.0","device_manufacturer":"Apple","event_datetime":"2026-01-07T12:00:00","connection_type":"wifi","country_iso_code":"RU","appmetrica_device_id":123456789,"session_id":987654321,"game_minute":1,"ad_cnt":0,"death_cnt":0,"money_balance":1000.0,"health_ratio":0.8,"kills_last_minute":10,"boss_kills_last_minute":0,"money_revenue_last_minute":500.0,"shop_activity_last_minute":1,"health_spent_last_minute":50,"damage":100.5,"health":200.0,"regen":5.0,"damage_lvl":3,"health_lvl":2,"regen_lvl":1,"speed_lvl":2,"critical_chance_lvl":1,"critical_mult_lvl":0,"last_boss":1,"hardness_calculate":0.5,"money_ad_reward_calculate":1000,"itemtoken_balance":10,"itemtoken_revenue_last_minute":2,"sharpeningstone_balance":5,"sharpeningstone_revenue_last_minute":1,"upgrade_activity_last_minute":3,"player_dps":150.5,"health_change_last_minute":-20.0}'
+
+# Отправка CLICKED события
+curl -X POST "http://localhost:8000/events/reward" \
+  -H "Content-Type: application/json" \
+  -d '{"os_name":"iOS","os_version":"16.0","device_manufacturer":"Apple","event_datetime":"2026-01-07T12:01:00","connection_type":"wifi","country_iso_code":"RU","appmetrica_device_id":123456789,"session_id":987654321,"event_type":"CLICKED","reward_type":"Money","PlayTimeMinutes":5,"DaySinceInstall":10,"reward_source":"mab","recommended_coefficient":1.5,"recommended_reward":1500.0}'
 
 # Получить статистику агента
 curl http://localhost:8000/agent/stats
-
-# Список активных сессий
-curl http://localhost:8000/sessions
-
-# Закрыть сессию
-curl -X DELETE http://localhost:8000/sessions/987654321
 ```
 
 ## Docker
@@ -468,7 +461,6 @@ MAB_EPSILON: 0.1                     # Начальный epsilon
 MAB_EPSILON_DECAY: 0.999             # Коэффициент уменьшения epsilon
 MAB_MIN_EPSILON: 0.01                # Минимальный epsilon
 MAB_PENALTY_WEIGHT: 0.1              # Вес штрафа за высокие коэффициенты
-SESSION_INACTIVITY_TIMEOUT: 10       # Таймаут сессии в минутах
 ```
 
 ### Команды Docker
@@ -486,6 +478,19 @@ docker-compose down
 # Перезапуск
 docker-compose restart rl-service
 ```
+
+## Workflow
+
+### Типичный сценарий использования
+
+1. **Игрок начинает играть** → Игра отправляет `init_event`
+2. **Каждую минуту** → Игра отправляет `snapshot` с актуальным `money_ad_reward_calculate`
+3. **Сервис возвращает** → `recommended_coefficient` и `recommended_reward`
+4. **Игра показывает оффер** → Пользователь видит предложенную награду
+5. **Пользователь принимает решение**:
+   - Посмотрел рекламу → Игра отправляет `CLICKED` событие → MAB обучается (reward положительный)
+   - Отклонил оффер → Игра отправляет `IGNORED` событие → MAB обучается (reward отрицательный)
+6. **MAB адаптируется** → На следующих snapshot событиях будет предлагать более оптимальные коэффициенты
 
 ## Разработка и расширение
 
@@ -538,9 +543,9 @@ async def load_mab_stats():
 
 Рекомендуется добавить:
 - **Prometheus metrics** для отслеживания:
-  - Количество активных сессий
-  - Среднее количество просмотренных реклам на сессию
+  - Количество CLICKED vs IGNORED событий
   - Распределение выбранных коэффициентов
+  - Средний reward по времени
   - Метрики обучения агента (epsilon, средний reward)
 - **Grafana dashboard** для визуализации
 - **Alerts** на аномалии в поведении агента

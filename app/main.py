@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI
 from typing import Dict
 import logging
 from datetime import datetime, timedelta
@@ -10,7 +10,7 @@ from app.ml_tools import state_fe_standart, reward
 from app.ab_user_splitter import user_splitter
 
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.rl_agent import RLAgent, SessionState
+from app.rl_agent import RLAgent
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,15 +26,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Глобальные объекты
 # Multi-Armed Bandit для оптимизации коэффициента награды за рекламу
-# Оптимизирует: конверсию в просмотр - штраф за высокие коэффициенты
+# Обучается на каждом единичном REWARD событии (CLICKED/IGNORED)
 mab_agent = RLAgent(
     coefficients=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
     epsilon=0.1,
     epsilon_decay=0.999,
     min_epsilon=0.01,
-    penalty_weight=0.1  # Штраф: 0.1 * coefficient за каждый просмотр
+    penalty_weight=0.1
 )
 
 with open("app/ml_models_pkl/ad_model_drop_device.pkl", "rb") as file:
@@ -138,7 +137,6 @@ async def root():
         "service": "Multi-Armed Bandit Ad Reward Optimization",
         "status": "running",
         "version": "1.0.0",
-        "active_sessions": len(active_sessions),
         "mab_stats": mab_agent.get_stats()
     }
 
@@ -153,7 +151,7 @@ async def health_check():
 async def handle_init_event(event: InitEvent):
     """
     Обрабатывает init_event - начало новой игровой сессии.
-    Создает новую сессию и возвращает начальную награду за рекламу.
+    Возвращает начальную награду за рекламу на основе дефолтного значения.
     """
     logger.info(f"Init event received for session {event.session_id}, device {event.appmetrica_device_id}")
 
@@ -227,7 +225,7 @@ async def handle_init_event(event: InitEvent):
 
 
 @app.post("/events/snapshot", response_model=AdRewardResponse)
-async def handle_snapshot_event(event: UserSnapshotActiveState, background_tasks: BackgroundTasks):
+async def handle_snapshot_event(event: UserSnapshotActiveState):
     """
     Обрабатывает user_snapshot_active_state - минутный срез состояния игрока.
     Использует MAB агента для определения оптимальной награды за рекламу.
@@ -328,81 +326,28 @@ async def handle_snapshot_event(event: UserSnapshotActiveState, background_tasks
 @app.post("/events/reward")
 async def handle_reward_event(event: RewardEvent):
     """
-    Обрабатывает reward_event - события связанные с рекламой
-    (ButtonShown, CLICKED, PAID).
+    Обрабатывает reward event - события рекламы (CLICKED/IGNORED).
 
-    IMPORTANT: НЕ обновляет MAB здесь! Обучение происходит в конце сессии.
+    CLICKED - пользователь принял оффер и посмотрел рекламу
+    IGNORED - пользователь не принял оффер на просмотр рекламы
+
+    Обучает MAB агента на основе полученного коэффициента и результата.
     """
     logger.info(
         f"Reward event received: session {event.session_id}, "
-        f"type {event.reward_type}, minute {event.game_minute}"
+        f"type {event.event_type}, source {event.reward_source}, "
+        f"coefficient {event.recommended_coefficient}, reward {event.recommended_reward}"
     )
 
-    # Проверяем существование сессии
-    if event.session_id not in active_sessions:
-        logger.warning(f"Session {event.session_id} not found for reward event")
-        raise HTTPException(status_code=404, detail=f"Session {event.session_id} not found")
-
-    session = active_sessions[event.session_id]
-    session.add_reward_event(event.model_dump())
-
-    # При PAID событии - просто логируем (обучение MAB будет в конце сессии)
-    if event.reward_type == "PAID":
-        logger.info(
-            f"Ad watched! Session {event.session_id}, "
-            f"total ads: {session.total_ads_watched}"
-        )
+    # Обучаем MAB на основе результата
+    clicked = (event.event_type == "CLICKED")
+    mab_agent.update(event.recommended_coefficient, clicked)
 
     return {
         "status": "ok",
         "session_id": event.session_id,
-        "event_type": event.reward_type,
-        "total_ads_watched": session.total_ads_watched
-    }
-
-
-@app.delete("/sessions/{session_id}")
-async def close_session(session_id: int):
-    """
-    Закрывает сессию и обновляет MAB агента (вручную).
-
-    ВАЖНО: Обучение происходит ЗДЕСЬ, а не при каждом PAID событии!
-    Награда = суммарное количество просмотренных реклам за всю сессию.
-
-    NOTE: Сессии также автоматически закрываются при неактивности > 10 минут.
-    """
-    if session_id not in active_sessions:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-
-    result = close_session_internal(session_id)
-    return result
-
-
-@app.get("/sessions")
-async def get_active_sessions():
-    """Возвращает список активных сессий"""
-    sessions_info = []
-    now = datetime.now()
-
-    for session_id, session in active_sessions.items():
-        inactive_duration = None
-        if session.last_activity_time:
-            inactive_duration = int((now - session.last_activity_time).total_seconds())
-
-        sessions_info.append({
-            "session_id": session_id,
-            "device_id": session.device_id,
-            "game_minute": session.current_game_minute,
-            "total_ads_watched": session.total_ads_watched,
-            "snapshots_count": len(session.snapshots),
-            "last_activity_time": session.last_activity_time.isoformat() if session.last_activity_time else None,
-            "inactive_seconds": inactive_duration
-        })
-
-    return {
-        "active_sessions_count": len(active_sessions),
-        "inactivity_timeout_minutes": SESSION_INACTIVITY_TIMEOUT,
-        "sessions": sessions_info
+        "event_type": event.event_type,
+        "mab_updated": True
     }
 
 
