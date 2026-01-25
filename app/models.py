@@ -68,7 +68,7 @@ class UserSnapshotActiveState(BaseEvent):
 class RewardEvent(BaseEvent):
     """Событие рекламы: CLICKED/IGNORED"""
     event_type: Literal["CLICKED", "IGNORED"]
-    reward_type: Literal["Money"] = "Money"
+    reward_type: Literal["Money", "SharpeningStone", "ItemToken"] = "Money"
     PlayTimeMinutes: int = Field(..., ge=0)
     DaySinceInstall: int = Field(..., ge=0)
     reward_source: str
@@ -80,5 +80,4 @@ class AdRewardResponse(BaseModel):
     """Ответ сервиса с размером награды за рекламу"""
     reward_source: str
     recommended_coefficient: float = Field(..., ge=0, le=8)
-    recommended_reward: int = Field(..., ge=0)
     game_minute: int
