@@ -123,14 +123,12 @@ async def handle_init_event(event: InitEvent):
 
     # На init event всегда возвращаем дефолтный коэффициент 1.0
     coefficient = 1.0
-    recommended_reward = 0  # На init нет базовой награды
 
     return AdRewardResponse(
         session_id=event.session_id,
         appmetrica_device_id=event.appmetrica_device_id,
         reward_source="default",
         recommended_coefficient=coefficient,
-        recommended_reward=recommended_reward,
         game_minute=0
     )
 
@@ -171,11 +169,10 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
 
         # Рассчитываем рекомендованную награду = coefficient * money_ad_reward_calculate
         base_reward = event.money_ad_reward_calculate
-        recommended_reward = int(coefficient * base_reward)
 
         logger.info(
             f"Session {event.session_id}, minute {event.game_minute}: "
-            f"LinUCB coefficient={coefficient}, base_reward={base_reward}, recommended_reward={recommended_reward}"
+            f"LinUCB coefficient={coefficient}, base_reward={base_reward}"
         )
 
         return AdRewardResponse(
@@ -183,7 +180,6 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             appmetrica_device_id=event.appmetrica_device_id,
             reward_source="mab",
             recommended_coefficient=coefficient,
-            recommended_reward=recommended_reward,
             game_minute=event.game_minute
         )
     
@@ -202,15 +198,12 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
         )[:, 1][0]
 
         coefficient = reward(prob)
-        base_reward = event.money_ad_reward_calculate
-        recommended_reward = int(coefficient * base_reward)
 
         return AdRewardResponse(
             session_id=event.session_id,
             appmetrica_device_id=event.appmetrica_device_id,
             reward_source="uplift",
             recommended_coefficient=coefficient,
-            recommended_reward=recommended_reward,
             game_minute=event.game_minute
         )
     
@@ -218,14 +211,12 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
 
         coefficient = 1
         base_reward = event.money_ad_reward_calculate
-        recommended_reward = int(coefficient * base_reward)
 
         return AdRewardResponse(
             session_id=event.session_id,
             appmetrica_device_id=event.appmetrica_device_id,
             reward_source="default",
             recommended_coefficient=coefficient,
-            recommended_reward=recommended_reward,
             game_minute=event.game_minute
         )
 
