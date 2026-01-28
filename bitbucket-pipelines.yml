@@ -25,3 +25,6 @@ pipelines:
                 SSH_USER: 'deploy'
                 SERVER: '49.12.193.23'
                 COMMAND: 'cd /opt/rl_opt_gp && docker compose down && docker compose up -d --build'
+            - sleep 15
+            - curl -f http://49.12.193.23:8000/health || exit 1
+            - echo "Health check passed!"
