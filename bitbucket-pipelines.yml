@@ -25,6 +25,11 @@ pipelines:
                 SSH_USER: 'deploy'
                 SERVER: '49.12.193.23'
                 COMMAND: 'cd /opt/rl_opt_gp && docker compose down && docker compose up -d --build'
-            - sleep 15
-            - curl -f http://49.12.193.23:8000/health || exit 1
-            - echo "Health check passed!"
+            - |
+              for i in {1..10}; do
+                curl -sf http://49.12.193.23:8000/health && echo "Health check passed!" && exit 0
+                echo "Attempt $i failed, waiting..."
+                sleep 5
+              done
+              echo "Health check failed after 10 attempts"
+              exit 1
