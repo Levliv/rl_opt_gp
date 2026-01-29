@@ -11,7 +11,7 @@ class BaseEvent(BaseModel):
     event_datetime: datetime
     connection_type: Literal["cell", "wifi"]
     country_iso_code: str
-    appmetrica_device_id: int = Field(..., ge=0)
+    appmetrica_device_id: str = Field(..., min_length=1)
     session_id: int = Field(..., ge=0)
 
 
