@@ -1,0 +1,35 @@
+image: atlassian/default-image:4
+
+pipelines:
+  branches:
+    main:
+      - step:
+          name: Deploy to Production
+          deployment: production
+          script:
+            - echo "S3_ENABLED=true" > .env
+            - echo "S3_BUCKET=${S3_BUCKET}" >> .env
+            - echo "S3_ENDPOINT_URL=${S3_ENDPOINT_URL}" >> .env
+            - echo "S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}" >> .env
+            - echo "S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}" >> .env
+            - echo "S3_REGION=${S3_REGION}" >> .env
+            - pipe: atlassian/rsync-deploy:0.12.0
+              variables:
+                USER: 'deploy'
+                SERVER: '49.12.193.23'
+                REMOTE_PATH: '/opt/rl_opt_gp/'
+                LOCAL_PATH: './'
+                EXTRA_ARGS: '--exclude=.git'
+            - pipe: atlassian/ssh-run:0.8.1
+              variables:
+                SSH_USER: 'deploy'
+                SERVER: '49.12.193.23'
+                COMMAND: 'cd /opt/rl_opt_gp && docker compose down && docker compose up -d --build'
+            - |
+              for i in {1..10}; do
+                curl -sf http://49.12.193.23:8000/health && echo "Health check passed!" && exit 0
+                echo "Attempt $i failed, waiting..."
+                sleep 5
+              done
+              echo "Health check failed after 10 attempts"
+              exit 1
