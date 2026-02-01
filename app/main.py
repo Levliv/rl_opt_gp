@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from typing import Dict
 import logging
 from datetime import datetime
@@ -29,11 +30,35 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Глобальная авторизация по API ключу
+API_KEY = os.getenv("API_KEY")
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    # Пропускаем публичные эндпоинты без авторизации
+    public_paths = ["/", "/health", "/docs", "/openapi.json", "/redoc"]
+    if request.url.path in public_paths:
+        return await call_next(request)
+
+    # Если API_KEY не настроен - пропускаем авторизацию (для локальной разработки)
+    if not API_KEY:
+        return await call_next(request)
+
+    # Проверяем ключ из заголовка X-API-Key
+    api_key = request.headers.get("X-API-Key")
+    if api_key != API_KEY:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized: invalid or missing API key"}
+        )
+
+    return await call_next(request)
+
 # LinUCB контекстный бандит для оптимизации коэффициента награды за рекламу
 # Использует состояние игрока (контекст) для более точного подбора коэффициента
 # context_dim=30 - использует те же 30 фичей, что и uplift модель (через state_fe_standart)
 
-# Настройка S3 storage для сохранения состояния агента
+# Настройка S3 storage д��я сохранения состояния агента
 s3_storage = S3CheckpointStorage(
     bucket_name=os.getenv("S3_BUCKET"),  # Если не указан, S3 будет отключен
     prefix="linucb_checkpoints",

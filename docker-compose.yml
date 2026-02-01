@@ -9,6 +9,8 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # API Authorization
+      - API_KEY=${API_KEY}
       # Logging
       - LOG_LEVEL=INFO
       # S3 configuration для сохранения состояния LinUCB агента
