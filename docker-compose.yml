@@ -30,6 +30,54 @@ services:
     networks:
       - rl-network
 
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: loki
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    networks:
+      - rl-network
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    container_name: promtail
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+    networks:
+      - rl-network
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+    restart: unless-stopped
+    networks:
+      - rl-network
+
+volumes:
+  loki-data:
+  grafana-data:
+
 networks:
   rl-network:
     driver: bridge
