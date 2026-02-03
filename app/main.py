@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from typing import Dict
 import logging
+from expiringdict import ExpiringDict
 from datetime import datetime
 import pickle
 from pathlib import Path
@@ -44,7 +44,7 @@ async def auth_middleware(request: Request, call_next):
     if not API_KEY:
         return await call_next(request)
 
-    # Проверяем ключ из заголовка X-API-Key
+    # Провер��ем ключ и�� заголовка X-API-Key
     api_key = request.headers.get("X-API-Key")
     if api_key != API_KEY:
         return JSONResponse(
@@ -100,7 +100,8 @@ ad_prob_model_features = ad_prob_model.feature_names_
 
 # Хранилище init_data для mab и uplift групп: (appmetrica_device_id, session_id) -> init_event_data
 # Нужно для feature engineering через state_fe_standart
-session_init_data: Dict[tuple, Dict] = {}
+# TTL 10 минут, макс 50000 сессий, TTL обновляется при каждом доступе
+session_init_data = ExpiringDict(max_len=50000, max_age_seconds=600)
 
 # Хранилище контекстов для LinUCB: (appmetrica_device_id, session_id, PlayTimeMinutes) -> context_vector
 # Используем PlayTimeMinutes как ключ для связи snapshot событий с reward событиями
@@ -152,7 +153,7 @@ async def handle_init_event(event: InitEvent):
     return AdRewardResponse(
         session_id=event.session_id,
         appmetrica_device_id=event.appmetrica_device_id,
-        reward_source="default",
+        reward_source=reward_source,
         recommended_coefficient=coefficient,
         game_minute=0
     )
@@ -192,12 +193,9 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
         # LinUCB выбирает коэффициент на основе контекста
         coefficient = linucb_agent.select_action(context)
 
-        # Рассчитываем рекомендованную награду = coefficient * money_ad_reward_calculate
-        base_reward = event.money_ad_reward_calculate
-
         logger.info(
             f"Session {event.session_id}, minute {event.game_minute}: "
-            f"LinUCB coefficient={coefficient}, base_reward={base_reward}"
+            f"LinUCB coefficient={coefficient}"
         )
 
         return AdRewardResponse(
@@ -233,9 +231,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
         )
     
     elif reward_source == "default":
-
         coefficient = 1
-        base_reward = event.money_ad_reward_calculate
 
         return AdRewardResponse(
             session_id=event.session_id,
