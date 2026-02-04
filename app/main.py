@@ -1,9 +1,12 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from typing import Dict
 import logging
+import traceback
 from expiringdict import ExpiringDict
 from datetime import datetime
+import time
 import pickle
 from pathlib import Path
 import os
@@ -34,6 +37,48 @@ app = FastAPI(
 # Глобальная авторизация по API ключу
 API_KEY = os.getenv("API_KEY")
 
+
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    """Логирует каждый входящий запрос: метод, путь, IP, статус, время ответа"""
+    start_time = time.time()
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Читаем тело запроса для логирования (только для POST)
+    body_text = ""
+    if request.method == "POST":
+        try:
+            body_bytes = await request.body()
+            body_text = body_bytes.decode("utf-8")[:1000]
+        except Exception:
+            body_text = "<failed to read body>"
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration = time.time() - start_time
+        logger.error(
+            f"REQUEST FAILED: {request.method} {request.url.path} "
+            f"from {client_ip} after {duration:.3f}s: {type(exc).__name__}: {exc}"
+        )
+        raise
+
+    duration = time.time() - start_time
+    log_msg = (
+        f"{request.method} {request.url.path} "
+        f"from {client_ip} -> {response.status_code} in {duration:.3f}s"
+    )
+    if body_text:
+        log_msg += f" | body: {body_text}"
+
+    if response.status_code >= 400:
+        logger.warning(log_msg)
+    else:
+        logger.info(log_msg)
+
+    return response
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     # Пропускаем публичные эндпоинты без авторизации
@@ -45,7 +90,7 @@ async def auth_middleware(request: Request, call_next):
     if not API_KEY:
         return await call_next(request)
 
-    # Провер��ем ключ и�� заголовка X-API-Key
+    # Проверяем ключ из заголовка X-API-Key
     api_key = request.headers.get("X-API-Key")
     if api_key != API_KEY:
         return JSONResponse(
@@ -55,11 +100,47 @@ async def auth_middleware(request: Request, call_next):
 
     return await call_next(request)
 
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Логирует ошибки валидации с деталями что именно не прошло"""
+    client_ip = request.client.host if request.client else "unknown"
+    body_text = ""
+    try:
+        body_bytes = await request.body()
+        body_text = body_bytes.decode("utf-8")[:1000]
+    except Exception:
+        body_text = "<failed to read body>"
+
+    logger.error(
+        f"VALIDATION ERROR: {request.method} {request.url.path} from {client_ip} | "
+        f"errors: {exc.errors()} | body: {body_text}"
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Ловит все необработанные исключения и логирует полный traceback"""
+    client_ip = request.client.host if request.client else "unknown"
+    logger.error(
+        f"UNHANDLED ERROR: {request.method} {request.url.path} from {client_ip} | "
+        f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+
 # LinUCB контекстный бандит для оптимизации коэффициента награды за рекламу
 # Использует состояние игрока (контекст) для более точного подбора коэффициента
 # context_dim=30 - использует те же 30 фичей, что и uplift модель (через state_fe_standart)
 
-# Настройка S3 storage д��я сохранения состояния агента
+# Настройка S3 storage для сохранения состояния агента
 s3_storage = S3CheckpointStorage(
     bucket_name=os.getenv("S3_BUCKET"),  # Если не указан, S3 будет отключен
     prefix="linucb_checkpoints",
@@ -135,113 +216,147 @@ async def handle_init_event(event: InitEvent):
     Обрабатывает init_event - начало новой игровой сессии.
     Возвращает начальную награду за рекламу на основе дефолтного значения.
     """
-    logger.info(f"Init event received for session {event.session_id}, device {event.appmetrica_device_id}")
+    try:
+        logger.info(f"Init event: device={event.appmetrica_device_id}, session={event.session_id}")
 
-    split_group_id = user_splitter(
-        user_id=event.appmetrica_device_id,
-        n_buckets=len(GROUPS),
-        salt=SALT,
-    )
-    reward_source = GROUPS[split_group_id]
+        split_group_id = user_splitter(
+            user_id=event.appmetrica_device_id,
+            n_buckets=len(GROUPS),
+            salt=SALT,
+        )
+        reward_source = GROUPS[split_group_id]
 
-    # Сохраняем init_data для всех групп (нужны для mab и uplift)
-    session_key = (event.appmetrica_device_id, event.session_id)
-    session_init_data[session_key] = event.model_dump()
+        # Сохраняем init_data для всех групп (нужны для mab и uplift)
+        session_key = (event.appmetrica_device_id, event.session_id)
+        session_init_data[session_key] = event.model_dump()
 
-    # На init event всегда возвращаем дефолтный коэффициент 1.0
-    coefficient = 1.0
+        # На init event всегда возвращаем дефолтный коэффициент 1.0
+        coefficient = 1.0
 
-    return AdRewardResponse(
-        session_id=event.session_id,
-        appmetrica_device_id=event.appmetrica_device_id,
-        reward_source=reward_source,
-        recommended_coefficient=coefficient,
-        game_minute=0
-    )
+        logger.info(f"Init response: device={event.appmetrica_device_id}, group={reward_source}, coefficient={coefficient}")
+
+        return AdRewardResponse(
+            session_id=event.session_id,
+            appmetrica_device_id=event.appmetrica_device_id,
+            reward_source=reward_source,
+            recommended_coefficient=coefficient,
+            game_minute=0
+        )
+    except Exception as exc:
+        logger.exception(f"ERROR in /events/init: device={event.appmetrica_device_id}, session={event.session_id}: {exc}")
+        raise
 
 
 @app.post("/events/snapshot", response_model=AdRewardResponse)
 async def handle_snapshot_event(event: UserSnapshotActiveState):
     """
-    Обрабатыва��т user_snapshot_active_state - минутный срез состояния игрока.
+    Обрабатывает user_snapshot_active_state - минутный срез состояния игрока.
     Использует MAB агента для определения оптимальной награды за рекламу.
     """
-    logger.info(f"Snapshot event received for session {event.session_id}, minute {event.game_minute}")
-
-    split_group_id = user_splitter(
-        user_id=event.appmetrica_device_id,
-        n_buckets=len(GROUPS),
-        salt=SALT,
-    )
-    reward_source = GROUPS[split_group_id]
-
-    if reward_source == "mab":
-        # Получаем init_data для LinUCB (нужны те же фичи что в uplift)
-        session_key = (event.appmetrica_device_id, event.session_id)
-        init_data = session_init_data.get(session_key, {})
-
-        # Объединяем init_data и snapshot для полного state
-        state = event.model_dump() | init_data
-
-        # Извлекаем контекст из полного state (применяется state_fe_standart)
-        context = LinUCB.extract_context(state)
-
-        # Сохраняем контекст с ключом (appmetrica_device_id, session_id, game_minute)
-        # game_minute будет использован для сопоставления с PlayTimeMinutes в reward событии
-        context_key = (event.appmetrica_device_id, event.session_id, event.game_minute)
-        session_contexts[context_key] = context
-
-        # LinUCB выбирает коэффициент на основе контекста
-        coefficient = linucb_agent.select_action(context)
-
+    try:
         logger.info(
-            f"Session {event.session_id}, minute {event.game_minute}: "
-            f"LinUCB coefficient={coefficient}"
+            f"Snapshot event: device={event.appmetrica_device_id}, session={event.session_id}, "
+            f"minute={event.game_minute}"
         )
 
-        return AdRewardResponse(
-            session_id=event.session_id,
-            appmetrica_device_id=event.appmetrica_device_id,
-            reward_source="mab",
-            recommended_coefficient=coefficient,
-            game_minute=event.game_minute
+        split_group_id = user_splitter(
+            user_id=event.appmetrica_device_id,
+            n_buckets=len(GROUPS),
+            salt=SALT,
         )
-    
-    elif reward_source == "uplift":
-        # Получаем init_data для uplift модели
-        session_key = (event.appmetrica_device_id, event.session_id)
-        init_data = session_init_data.get(session_key, {})
-        state = event.model_dump() | init_data
-        fe_state = state_fe_standart(state)
+        reward_source = GROUPS[split_group_id]
 
-        prob = ad_prob_model.predict_proba(
-            Pool(
-                [[fe_state.get(f) for f in ad_prob_model_features]],
-                feature_names=ad_prob_model_features
+        if reward_source == "mab":
+            # Получаем init_data для LinUCB (нужны те же фичи что в uplift)
+            session_key = (event.appmetrica_device_id, event.session_id)
+            init_data = session_init_data.get(session_key, {})
+
+            if not init_data:
+                logger.warning(f"No init_data for session_key={session_key}, feature engineering may be incomplete")
+
+            # Объединяем init_data и snapshot для полного state
+            state = event.model_dump() | init_data
+
+            # Извлекаем контекст из полного state (применяется state_fe_standart)
+            context = LinUCB.extract_context(state)
+
+            # Сохраняем контекст с ключом (appmetrica_device_id, session_id, game_minute)
+            # game_minute будет использован для сопоставления с PlayTimeMinutes в reward событии
+            context_key = (event.appmetrica_device_id, event.session_id, event.game_minute)
+            session_contexts[context_key] = context
+
+            # LinUCB выбирает коэффициент на основе контекста
+            coefficient = linucb_agent.select_action(context)
+
+            logger.info(
+                f"Snapshot response [mab]: device={event.appmetrica_device_id}, "
+                f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
             )
-        )[:, 1][0]
 
-        coefficient = reward(prob)
+            return AdRewardResponse(
+                session_id=event.session_id,
+                appmetrica_device_id=event.appmetrica_device_id,
+                reward_source="mab",
+                recommended_coefficient=coefficient,
+                game_minute=event.game_minute
+            )
 
-        return AdRewardResponse(
-            session_id=event.session_id,
-            appmetrica_device_id=event.appmetrica_device_id,
-            reward_source="uplift",
-            recommended_coefficient=coefficient,
-            game_minute=event.game_minute
+        elif reward_source == "uplift":
+            # Получаем init_data для uplift модели
+            session_key = (event.appmetrica_device_id, event.session_id)
+            init_data = session_init_data.get(session_key, {})
+
+            if not init_data:
+                logger.warning(f"No init_data for session_key={session_key} (uplift), feature engineering may be incomplete")
+
+            state = event.model_dump() | init_data
+            fe_state = state_fe_standart(state)
+
+            prob = ad_prob_model.predict_proba(
+                Pool(
+                    [[fe_state.get(f) for f in ad_prob_model_features]],
+                    feature_names=ad_prob_model_features
+                )
+            )[:, 1][0]
+
+            coefficient = reward(prob)
+
+            logger.info(
+                f"Snapshot response [uplift]: device={event.appmetrica_device_id}, "
+                f"session={event.session_id}, minute={event.game_minute}, "
+                f"prob={prob:.4f}, coefficient={coefficient}"
+            )
+
+            return AdRewardResponse(
+                session_id=event.session_id,
+                appmetrica_device_id=event.appmetrica_device_id,
+                reward_source="uplift",
+                recommended_coefficient=coefficient,
+                game_minute=event.game_minute
+            )
+
+        elif reward_source == "default":
+            coefficient = 1
+
+            logger.info(
+                f"Snapshot response [default]: device={event.appmetrica_device_id}, "
+                f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
+            )
+
+            return AdRewardResponse(
+                session_id=event.session_id,
+                appmetrica_device_id=event.appmetrica_device_id,
+                reward_source="default",
+                recommended_coefficient=coefficient,
+                game_minute=event.game_minute
+            )
+
+    except Exception as exc:
+        logger.exception(
+            f"ERROR in /events/snapshot: device={event.appmetrica_device_id}, "
+            f"session={event.session_id}, minute={event.game_minute}: {exc}"
         )
-    
-    elif reward_source == "default":
-        coefficient = 1
-
-        return AdRewardResponse(
-            session_id=event.session_id,
-            appmetrica_device_id=event.appmetrica_device_id,
-            reward_source="default",
-            recommended_coefficient=coefficient,
-            game_minute=event.game_minute
-        )
-
+        raise
 
 
 @app.post("/events/reward")
@@ -254,58 +369,69 @@ async def handle_reward_event(event: RewardEvent):
 
     Обучает MAB агента на основе полученного коэффициента и результата.
     """
-    logger.info(
-        f"Reward event received: session {event.session_id}, "
-        f"type {event.event_type}, source {event.reward_source}, "
-        f"coefficient {event.recommended_coefficient}, reward {event.recommended_reward}"
-    )
+    try:
+        logger.info(
+            f"Reward event: device={event.appmetrica_device_id}, session={event.session_id}, "
+            f"type={event.event_type}, source={event.reward_source}, "
+            f"coefficient={event.recommended_coefficient}, reward={event.recommended_reward}, "
+            f"PlayTimeMinutes={event.PlayTimeMinutes}"
+        )
 
-    if event.reward_source == "mab":
-        clicked = (event.event_type == "CLICKED")
+        if event.reward_source == "mab":
+            clicked = (event.event_type == "CLICKED")
 
-        # Получаем контекст по ключу (appmetrica_device_id, session_id, PlayTimeMinutes)
-        context_key = (event.appmetrica_device_id, event.session_id, event.PlayTimeMinutes)
-        context = session_contexts.get(context_key)
+            # Получаем контекст по ключу (appmetrica_device_id, session_id, PlayTimeMinutes)
+            context_key = (event.appmetrica_device_id, event.session_id, event.PlayTimeMinutes)
+            context = session_contexts.get(context_key)
 
-        if context is not None:
-            # Обучаем LinUCB на основе контекста и результата
-            linucb_agent.update(event.recommended_coefficient, context, clicked)
+            if context is not None:
+                # Обучаем LinUCB на основе контекста и результата
+                linucb_agent.update(event.recommended_coefficient, context, clicked)
 
-            # Удаляем контекст после использования для экономии памяти
-            del session_contexts[context_key]
+                # Удаляем контекст после использования для экономии памяти
+                del session_contexts[context_key]
 
-            logger.info(
-                f"LinUCB updated for device {event.appmetrica_device_id}, session {event.session_id}, "
-                f"PlayTimeMinutes={event.PlayTimeMinutes}, coefficient={event.recommended_coefficient}, clicked={clicked}"
-            )
+                logger.info(
+                    f"LinUCB updated: device={event.appmetrica_device_id}, session={event.session_id}, "
+                    f"PlayTimeMinutes={event.PlayTimeMinutes}, coefficient={event.recommended_coefficient}, "
+                    f"clicked={clicked}, total_pulls={linucb_agent.total_pulls}"
+                )
 
-            return {
-                "status": "ok",
-                "session_id": event.session_id,
-                "event_type": event.event_type,
-                "linucb_updated": True
-            }
-        else:
-            # Контекст не найден - возможно, событие пришло раньше snapshot или после очистки
-            logger.warning(
-                f"Context not found for device {event.appmetrica_device_id}, session {event.session_id}, "
-                f"PlayTimeMinutes={event.PlayTimeMinutes}. LinUCB update skipped."
-            )
+                return {
+                    "status": "ok",
+                    "session_id": event.session_id,
+                    "event_type": event.event_type,
+                    "linucb_updated": True
+                }
+            else:
+                # Контекст не найден - возможно, событие пришло раньше snapshot или после очистки
+                logger.warning(
+                    f"Context not found: device={event.appmetrica_device_id}, session={event.session_id}, "
+                    f"PlayTimeMinutes={event.PlayTimeMinutes}, "
+                    f"active_contexts={len(session_contexts)}. LinUCB update skipped."
+                )
 
-            return {
-                "status": "ok",
-                "session_id": event.session_id,
-                "event_type": event.event_type,
-                "linucb_updated": False,
-                "reason": "context_not_found"
-            }
+                return {
+                    "status": "ok",
+                    "session_id": event.session_id,
+                    "event_type": event.event_type,
+                    "linucb_updated": False,
+                    "reason": "context_not_found"
+                }
 
-    return {
-        "status": "ok",
-        "session_id": event.session_id,
-        "event_type": event.event_type,
-        "mab_updated": False
-    }
+        return {
+            "status": "ok",
+            "session_id": event.session_id,
+            "event_type": event.event_type,
+            "mab_updated": False
+        }
+
+    except Exception as exc:
+        logger.exception(
+            f"ERROR in /events/reward: device={event.appmetrica_device_id}, "
+            f"session={event.session_id}, type={event.event_type}: {exc}"
+        )
+        raise
 
 
 @app.get("/agent/stats")
@@ -323,29 +449,35 @@ async def save_agent():
     Сохраняет текущее состояние LinUCB агента в S3.
     Полезно для ручного создания checkpoint перед важными изменениями.
     """
-    # Сохраняем во временный файл
-    linucb_agent.save(TEMP_CHECKPOINT_PATH)
+    try:
+        # Сохраняем во временный файл
+        linucb_agent.save(TEMP_CHECKPOINT_PATH)
 
-    # Загружаем в S3
-    s3_uploaded = s3_storage.upload(TEMP_CHECKPOINT_PATH)
+        # Загружаем в S3
+        s3_uploaded = s3_storage.upload(TEMP_CHECKPOINT_PATH)
 
-    # Удаляем временный файл
-    Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
+        # Удаляем временный файл
+        Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
 
-    if s3_uploaded:
-        return {
-            "status": "ok",
-            "message": f"Agent saved to S3: s3://{s3_storage.bucket_name}/{s3_storage.prefix}/linucb_agent.pkl",
-            "total_pulls": linucb_agent.total_pulls,
-            "s3_enabled": True
-        }
-    else:
-        return {
-            "status": "warning",
-            "message": "S3 is disabled or upload failed. Agent state saved only in memory.",
-            "total_pulls": linucb_agent.total_pulls,
-            "s3_enabled": False
-        }
+        if s3_uploaded:
+            logger.info(f"Agent saved to S3, total_pulls={linucb_agent.total_pulls}")
+            return {
+                "status": "ok",
+                "message": f"Agent saved to S3: s3://{s3_storage.bucket_name}/{s3_storage.prefix}/linucb_agent.pkl",
+                "total_pulls": linucb_agent.total_pulls,
+                "s3_enabled": True
+            }
+        else:
+            logger.warning("Agent save: S3 disabled or upload failed")
+            return {
+                "status": "warning",
+                "message": "S3 is disabled or upload failed. Agent state saved only in memory.",
+                "total_pulls": linucb_agent.total_pulls,
+                "s3_enabled": False
+            }
+    except Exception as exc:
+        logger.exception(f"ERROR in /agent/save: {exc}")
+        raise
 
 
 if __name__ == "__main__":
