@@ -4,7 +4,7 @@ from fastapi.exceptions import RequestValidationError
 from typing import Dict
 import logging
 import traceback
-from expiringdict import ExpiringDict
+from cachetools import TTLCache
 from datetime import datetime
 import time
 import pickle
@@ -180,10 +180,21 @@ with open("app/ml_models_pkl/ad_model_drop_device.pkl", "rb") as file:
 
 ad_prob_model_features = ad_prob_model.feature_names_
 
+# TTL Cache с обновлением TTL при доступе (sliding TTL)
+class SlidingTTLCache(TTLCache):
+    """TTLCache с обновлением TTL при каждом get() — sliding expiration"""
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        if value is not default and key in self:
+            # Перезаписываем значение чтобы обновить TTL
+            super().__setitem__(key, value)
+        return value
+
+
 # Хранилище init_data для mab и uplift групп: (appmetrica_device_id, session_id) -> init_event_data
 # Нужно для feature engineering через state_fe_standart
-# TTL 10 минут, макс 50000 сессий, TTL обновляется при каждом доступе
-session_init_data = ExpiringDict(max_len=50000, max_age_seconds=600)
+# TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
+session_init_data = SlidingTTLCache(maxsize=50000, ttl=3600)
 
 # Хранилище контекстов для LinUCB: (appmetrica_device_id, session_id, PlayTimeMinutes) -> context_vector
 # Используем PlayTimeMinutes как ключ для связи snapshot событий с reward событиями
