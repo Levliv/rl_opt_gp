@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from typing import Dict
 import logging
 import traceback
 from cachetools import TTLCache
@@ -196,9 +195,10 @@ class SlidingTTLCache(TTLCache):
 # TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
 session_init_data = SlidingTTLCache(maxsize=50000, ttl=3600)
 
-# Хранилище контекстов для LinUCB: (appmetrica_device_id, session_id, PlayTimeMinutes) -> context_vector
-# Используем PlayTimeMinutes как ключ для связи snapshot событий с reward событиями
-session_contexts: Dict[tuple, np.ndarray] = {}
+# Хранилище контекстов для LinUCB: (appmetrica_device_id, session_id) -> context_vector
+# Reward всегда относится к последнему контексту сессии
+# TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
+session_contexts = SlidingTTLCache(maxsize=50000, ttl=3600)
 
 GROUPS = ["default", "mab", "uplift"]
 SALT = "v1"
@@ -291,9 +291,9 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             # Извлекаем контекст из полного state (применяется state_fe_standart)
             context = LinUCB.extract_context(state)
 
-            # Сохраняем контекст с ключом (appmetrica_device_id, session_id, game_minute)
-            # game_minute будет использован для сопоставления с PlayTimeMinutes в reward событии
-            context_key = (event.appmetrica_device_id, event.session_id, event.game_minute)
+            # Сохраняем контекст с ключом (appmetrica_device_id, session_id)
+            # Reward всегда относится к последнему контексту — перезаписываем при каждом snapshot
+            context_key = (event.appmetrica_device_id, event.session_id)
             session_contexts[context_key] = context
 
             # LinUCB выбирает коэффициент на основе контекста
@@ -391,21 +391,18 @@ async def handle_reward_event(event: RewardEvent):
         if event.reward_source == "mab":
             clicked = (event.event_type == "CLICKED")
 
-            # Получаем контекст по ключу (appmetrica_device_id, session_id, PlayTimeMinutes)
-            context_key = (event.appmetrica_device_id, event.session_id, event.PlayTimeMinutes)
+            # Получаем последний контекст сессии (без привязки к минуте)
+            context_key = (event.appmetrica_device_id, event.session_id)
             context = session_contexts.get(context_key)
 
             if context is not None:
                 # Обучаем LinUCB на основе контекста и результата
                 linucb_agent.update(event.recommended_coefficient, context, clicked)
 
-                # Удаляем контекст после использования для экономии памяти
-                del session_contexts[context_key]
-
                 logger.info(
                     f"LinUCB updated: device={event.appmetrica_device_id}, session={event.session_id}, "
-                    f"PlayTimeMinutes={event.PlayTimeMinutes}, coefficient={event.recommended_coefficient}, "
-                    f"clicked={clicked}, total_pulls={linucb_agent.total_pulls}"
+                    f"coefficient={event.recommended_coefficient}, clicked={clicked}, "
+                    f"total_pulls={linucb_agent.total_pulls}"
                 )
 
                 return {
@@ -418,7 +415,6 @@ async def handle_reward_event(event: RewardEvent):
                 # Контекст не найден - возможно, событие пришло раньше snapshot или после очистки
                 logger.warning(
                     f"Context not found: device={event.appmetrica_device_id}, session={event.session_id}, "
-                    f"PlayTimeMinutes={event.PlayTimeMinutes}, "
                     f"active_contexts={len(session_contexts)}. LinUCB update skipped."
                 )
 
