@@ -345,6 +345,11 @@ class LinUCB:
         # Применяем feature engineering из uplift модели
         fe_state = state_fe_standart(state)
 
+        # Заменяем NaN и Inf на 0 для numerical stability
+        for key, value in fe_state.items():
+            if isinstance(value, (int, float)) and (np.isnan(value) or np.isinf(value)):
+                fe_state[key] = 0.0
+
         # Порядок фичей точно как в CatBoost модели:
         # ['ad_cnt_to_game_minute', 'game_minute', 'ad_cnt_lifetime_to_inapp_cnt_lifetime',
         #  'avg_ad_cnt_per_session_cnt', 'ad_cnt', 'ad_views_cnt', 'avg_playtime_lifetime',
