@@ -36,7 +36,12 @@ def state_fe_standart(
             state[key] = 0
 
     if missing_keys:
-        logger.warning(f"Missing keys in state_fe_standart, using 0 for: {missing_keys}")
+        device_id = state.get('appmetrica_device_id', 'unknown')
+        session_id = state.get('session_id', 'unknown')
+        logger.warning(
+            f"Missing keys in state_fe_standart for device={device_id}, session={session_id}, "
+            f"using 0 for: {missing_keys}"
+        )
 
     state['session_cnt_to_days_since_install'] = ieee_754_div(state['session_cnt'], (state['days_since_install'] + 1))
     state['avg_ad_cnt_per_session_cnt'] = ieee_754_div(state['ad_views_cnt'], state['session_cnt'])
