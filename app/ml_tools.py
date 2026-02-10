@@ -1,21 +1,43 @@
 from typing import Dict
+import logging
+
+logger = logging.getLogger(__name__)
 
 def ieee_754_div(
     a: float,
     b: float
 ):
-    
+
     if a is None or b is None:
         return float("nan")
-    
+
     if b == 0:
         return float("nan") if a == 0 else float("inf")
-    
+
     return a / b
 
 def state_fe_standart(
     state: Dict
 ):
+    missing_keys = []
+
+    # Проверяем наличие необходимых ключей и подставляем 0 если их нет
+    required_keys = [
+        'session_cnt', 'days_since_install', 'ad_views_cnt', 'ad_cnt',
+        'game_minute', 'avg_playtime_lifetime', 'inapp_cnt',
+        'money_revenue_last_minute', 'money_ad_reward_calculate',
+        'money_balance', 'itemtoken_revenue_last_minute',
+        'itemtoken_ad_reward_calculate', 'hard_balance', 'hardness_calculate'
+    ]
+
+    for key in required_keys:
+        if key not in state:
+            missing_keys.append(key)
+            state[key] = 0
+
+    if missing_keys:
+        logger.warning(f"Missing keys in state_fe_standart, using 0 for: {missing_keys}")
+
     state['session_cnt_to_days_since_install'] = ieee_754_div(state['session_cnt'], (state['days_since_install'] + 1))
     state['avg_ad_cnt_per_session_cnt'] = ieee_754_div(state['ad_views_cnt'], state['session_cnt'])
 
