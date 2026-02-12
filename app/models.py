@@ -35,7 +35,7 @@ class UserSnapshotActiveState(BaseEvent):
     ad_cnt: int = Field(..., ge=0)
     death_cnt: int = Field(..., ge=0)
     money_balance: float = Field(..., ge=0)
-    health_ratio: float = Field(..., le=1)
+    health_ratio: float = Field(..., ge=0)
     kills_last_minute: int = Field(..., ge=0)
     boss_kills_last_minute: int = Field(..., ge=0)
     money_revenue_last_minute: float
@@ -54,9 +54,9 @@ class UserSnapshotActiveState(BaseEvent):
     hardness_calculate: float = Field(..., ge=0)
     money_ad_reward_calculate: int = Field(..., ge=0)
     itemtoken_balance: float = Field(..., ge=0)
-    itemtoken_revenue_last_minute: float = Field(..., ge=0)
+    itemtoken_revenue_last_minute: float
     sharpeningstone_balance: float = Field(..., ge=0)
-    sharpeningstone_revenue_last_minute: float = Field(..., ge=0)
+    sharpeningstone_revenue_last_minute: float
     upgrade_activity_last_minute: int = Field(..., ge=0)
     player_dps: float = Field(..., ge=0)
     health_change_last_minute: float

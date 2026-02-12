@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 import logging
 import traceback
+import asyncio
 from cachetools import TTLCache
 from datetime import datetime
 import time
@@ -202,6 +203,37 @@ session_contexts = SlidingTTLCache(maxsize=50000, ttl=3600)
 
 GROUPS = ["default", "mab", "uplift"]
 SALT = "v1"
+
+
+async def periodic_save_agent():
+    """Фоновая задача: сохраняет агента каждые 6 часов"""
+    while True:
+        try:
+            await asyncio.sleep(6 * 60 * 60)  # 6 часов
+            logger.info("Periodic agent save: starting...")
+
+            # Сохраняем во временный файл
+            linucb_agent.save(TEMP_CHECKPOINT_PATH)
+
+            # Загружаем в S3
+            s3_uploaded = s3_storage.upload(TEMP_CHECKPOINT_PATH)
+
+            # Удаляем временный файл
+            Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
+
+            if s3_uploaded:
+                logger.info(f"Periodic agent save: SUCCESS, total_pulls={linucb_agent.total_pulls}")
+            else:
+                logger.warning("Periodic agent save: S3 disabled or upload failed")
+        except Exception as exc:
+            logger.exception(f"Periodic agent save: ERROR - {exc}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Запускаем фоновую задачу при старте приложения"""
+    asyncio.create_task(periodic_save_agent())
+    logger.info("Periodic agent save task started (every 6 hours)")
 
 
 @app.get("/")
