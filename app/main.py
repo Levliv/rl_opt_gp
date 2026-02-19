@@ -28,10 +28,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Создание FastAPI приложения
+DISABLE_DOCS = os.getenv("DISABLE_DOCS", "true").lower() == "true"
+
 app = FastAPI(
     title="RL Ad Reward Optimization Service",
     description="Reinforcement Learning service for optimizing ad rewards in mobile game",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None if DISABLE_DOCS else "/docs",
+    redoc_url=None if DISABLE_DOCS else "/redoc",
+    openapi_url=None if DISABLE_DOCS else "/openapi.json",
 )
 
 # Глобальная авторизация по API ключу
@@ -82,7 +87,7 @@ async def logging_middleware(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     # Пропускаем публичные эндпоинты без авторизации
-    public_paths = ["/", "/health", "/docs", "/openapi.json", "/redoc"]
+    public_paths = ["/", "/health"]
     if request.url.path in public_paths:
         return await call_next(request)
 
