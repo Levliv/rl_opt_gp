@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Optional
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError, NoCredentialsError
 from pathlib import Path
 
@@ -49,7 +50,12 @@ class S3CheckpointStorage:
                     s3_config['endpoint_url'] = endpoint_url
                     logger.info(f"Using custom S3 endpoint: {endpoint_url}")
 
-                self.s3_client = boto3.client('s3', **s3_config)
+                boto_config = BotoConfig(
+                    connect_timeout=5,
+                    read_timeout=30,
+                    retries={'max_attempts': 2, 'mode': 'standard'}
+                )
+                self.s3_client = boto3.client('s3', config=boto_config, **s3_config)
                 logger.info(f"S3 storage initialized: bucket={self.bucket_name}, prefix={self.prefix}")
             except (NoCredentialsError, Exception) as e:
                 logger.warning(f"Failed to initialize S3 client: {e}. S3 disabled.")

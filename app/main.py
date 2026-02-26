@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -30,6 +31,31 @@ logger = logging.getLogger(__name__)
 # Создание FastAPI приложения
 DISABLE_DOCS = os.getenv("DISABLE_DOCS", "true").lower() == "true"
 
+
+@asynccontextmanager
+async def lifespan(app):
+    global linucb_agent, _save_task
+    try:
+        if await asyncio.to_thread(s3_storage.exists):
+            logger.info("Trying to load LinUCB agent from S3...")
+            if await asyncio.to_thread(s3_storage.download, TEMP_CHECKPOINT_PATH):
+                linucb_agent = await asyncio.to_thread(LinUCB.load, TEMP_CHECKPOINT_PATH)
+                Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
+                logger.info(f"LinUCB agent loaded from S3 (total_pulls={linucb_agent.total_pulls})")
+    except Exception as exc:
+        logger.exception(f"Failed to load agent from S3: {exc}")
+
+    _save_task = asyncio.create_task(periodic_save_agent())
+    logger.info("Periodic agent save task started (every 6 hours)")
+    yield
+    if _save_task:
+        _save_task.cancel()
+        try:
+            await _save_task
+        except asyncio.CancelledError:
+            pass
+
+
 app = FastAPI(
     title="RL Ad Reward Optimization Service",
     description="Reinforcement Learning service for optimizing ad rewards in mobile game",
@@ -37,6 +63,7 @@ app = FastAPI(
     docs_url=None if DISABLE_DOCS else "/docs",
     redoc_url=None if DISABLE_DOCS else "/redoc",
     openapi_url=None if DISABLE_DOCS else "/openapi.json",
+    lifespan=lifespan,
 )
 
 # Глобальная авторизация по API ключу
@@ -155,30 +182,14 @@ s3_storage = S3CheckpointStorage(
 # Временный файл для загрузки из S3 (удаляется после загрузки)
 TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent.pkl"
 
-# Пытаемся загрузить сохраненное состояние из S3 при старте
-if s3_storage.exists():
-    logger.info("Trying to load LinUCB agent from S3...")
-    if s3_storage.download(TEMP_CHECKPOINT_PATH):
-        linucb_agent = LinUCB.load(TEMP_CHECKPOINT_PATH)
-        # Удаляем временный файл после загрузки
-        Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
-        logger.info(f"LinUCB agent loaded from S3 (total_pulls={linucb_agent.total_pulls})")
-    else:
-        logger.info("Failed to load from S3, creating new LinUCB agent")
-        linucb_agent = LinUCB(
-            coefficients=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-            context_dim=30,
-            alpha=1.0,
-            penalty_weight=0.1
-        )
-else:
-    logger.info("Creating new LinUCB agent (no checkpoint in S3)")
-    linucb_agent = LinUCB(
-        coefficients=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-        context_dim=30,
-        alpha=1.0,
-        penalty_weight=0.1
-    )
+linucb_agent = LinUCB(
+    coefficients=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+    context_dim=30,
+    alpha=1.0,
+    penalty_weight=0.1
+)
+
+_save_task = None
 
 with open("app/ml_models_pkl/ad_model_drop_device.pkl", "rb") as file:
     ad_prob_model = pickle.load(file)
@@ -211,34 +222,29 @@ SALT = "v1"
 
 
 async def periodic_save_agent():
-    """Фоновая задача: сохраняет агента каждые 6 часов"""
     while True:
         try:
-            await asyncio.sleep(6 * 60 * 60)  # 6 часов
+            await asyncio.sleep(6 * 60 * 60)
             logger.info("Periodic agent save: starting...")
-
-            # Сохраняем во временный файл
-            linucb_agent.save(TEMP_CHECKPOINT_PATH)
-
-            # Загружаем в S3
-            s3_uploaded = s3_storage.upload(TEMP_CHECKPOINT_PATH)
-
-            # Удаляем временный файл
+            await asyncio.to_thread(linucb_agent.save, TEMP_CHECKPOINT_PATH)
+            s3_uploaded = await asyncio.to_thread(s3_storage.upload, TEMP_CHECKPOINT_PATH)
             Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
-
             if s3_uploaded:
                 logger.info(f"Periodic agent save: SUCCESS, total_pulls={linucb_agent.total_pulls}")
             else:
                 logger.warning("Periodic agent save: S3 disabled or upload failed")
+        except asyncio.CancelledError:
+            logger.info("Periodic agent save: cancelled, final save...")
+            try:
+                linucb_agent.save(TEMP_CHECKPOINT_PATH)
+                s3_storage.upload(TEMP_CHECKPOINT_PATH)
+                Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Final save failed")
+            return
         except Exception as exc:
             logger.exception(f"Periodic agent save: ERROR - {exc}")
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Запускаем фоновую задачу при старте приложения"""
-    asyncio.create_task(periodic_save_agent())
-    logger.info("Periodic agent save task started (every 6 hours)")
 
 
 @app.get("/")
@@ -333,8 +339,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             context_key = (event.appmetrica_device_id, event.session_id)
             session_contexts[context_key] = context
 
-            # LinUCB выбирает коэффициент на основе контекста
-            coefficient = linucb_agent.select_action(context)
+            coefficient = await asyncio.to_thread(linucb_agent.select_action, context)
 
             logger.info(
                 f"Snapshot response [mab]: device={event.appmetrica_device_id}, "
@@ -360,12 +365,11 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             state = event.model_dump() | init_data
             fe_state = state_fe_standart(state)
 
-            prob = ad_prob_model.predict_proba(
-                Pool(
-                    [[fe_state.get(f) for f in ad_prob_model_features]],
-                    feature_names=ad_prob_model_features
-                )
-            )[:, 1][0]
+            pool = Pool(
+                [[fe_state.get(f) for f in ad_prob_model_features]],
+                feature_names=ad_prob_model_features
+            )
+            prob = (await asyncio.to_thread(ad_prob_model.predict_proba, pool))[:, 1][0]
 
             coefficient = reward(prob)
 
@@ -433,8 +437,7 @@ async def handle_reward_event(event: RewardEvent):
             context = session_contexts.get(context_key)
 
             if context is not None:
-                # Обучаем LinUCB на основе контекста и результата
-                linucb_agent.update(event.recommended_coefficient, context, clicked)
+                await asyncio.to_thread(linucb_agent.update, event.recommended_coefficient, context, clicked)
 
                 logger.info(
                     f"LinUCB updated: device={event.appmetrica_device_id}, session={event.session_id}, "
@@ -494,13 +497,8 @@ async def save_agent():
     Полезно для ручного создания checkpoint перед важными изменениями.
     """
     try:
-        # Сохраняем во временный файл
-        linucb_agent.save(TEMP_CHECKPOINT_PATH)
-
-        # Загружаем в S3
-        s3_uploaded = s3_storage.upload(TEMP_CHECKPOINT_PATH)
-
-        # Удаляем временный файл
+        await asyncio.to_thread(linucb_agent.save, TEMP_CHECKPOINT_PATH)
+        s3_uploaded = await asyncio.to_thread(s3_storage.upload, TEMP_CHECKPOINT_PATH)
         Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
 
         if s3_uploaded:
