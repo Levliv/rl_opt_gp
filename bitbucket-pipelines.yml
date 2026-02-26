@@ -1,8 +1,8 @@
 image: atlassian/default-image:4
 
 pipelines:
-  branches:
-    main:
+  custom:
+    deploy-production:
       - step:
           name: Deploy to Production
           deployment: production
