@@ -18,6 +18,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1g"
+        max-file: "3"
     networks:
       - rl-network
 
@@ -51,6 +56,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1g"
+        max-file: "3"
     networks:
       - rl-network
 
