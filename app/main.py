@@ -78,7 +78,7 @@ API_KEY = os.getenv("API_KEY")
 async def logging_middleware(request: Request, call_next):
     """Логирует каждый входящий запрос: метод, путь, IP, статус, время ответа"""
     start_time = time.time()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
 
     # Читаем тело запроса для логирования (только для POST)
     body_text = ""
@@ -140,7 +140,7 @@ async def auth_middleware(request: Request, call_next):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Логирует ошибки валидации с деталями что именно не прошло"""
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
     body_text = ""
     try:
         body_bytes = await request.body()
@@ -161,7 +161,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Ловит все необработанные исключения и логирует полный traceback"""
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
     logger.error(
         f"UNHANDLED ERROR: {request.method} {request.url.path} from {client_ip} | "
         f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
