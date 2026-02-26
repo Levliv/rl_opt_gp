@@ -42,6 +42,10 @@ async def lifespan(app):
                 linucb_agent = await asyncio.to_thread(LinUCB.load, TEMP_CHECKPOINT_PATH)
                 Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
                 logger.info(f"LinUCB agent loaded from S3 (total_pulls={linucb_agent.total_pulls})")
+            else:
+                logger.warning("Failed to download from S3, starting with fresh LinUCB agent")
+        else:
+            logger.info("No checkpoint in S3, starting with fresh LinUCB agent")
     except Exception as exc:
         logger.exception(f"Failed to load agent from S3: {exc}")
 
