@@ -184,13 +184,13 @@ s3_storage = S3CheckpointStorage(
 )
 
 # Временный файл для загрузки из S3 (удаляется после загрузки)
-TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent.pkl"
+TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent20260227.pkl"
 
 linucb_agent = LinUCB(
-    coefficients=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+    coefficients=[0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
     context_dim=30,
     alpha=1.0,
-    penalty_weight=0.1
+    penalty_weight=0.025
 )
 
 _save_task = None
