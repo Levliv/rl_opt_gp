@@ -527,11 +527,10 @@ class UpliftUCB:
         # Проверяем отсутствующие поля и логируем предупреждение
         required_keys = [
             'ad_cnt', 'game_minute', 'ad_views_cnt', 'money_ad_reward_calculate',
-            'playtime', 'health_ratio', 'inapp_cnt', 'itemtoken_balance',
-            'boss_kills_last_minute', 'last_boss', 'damage_lvl', 'global_death_count',
+            'inapp_cnt', 'last_boss', 'health_ratio', 'global_death_count',
+            'session_cnt', 'avg_playtime_lifetime', 'itemtoken_balance',
+            'boss_kills_last_minute', 'damage_lvl', 'money_revenue_last_minute',
             'kills_last_minute', 'upgrade_activity_last_minute',
-            'itemtoken_revenue_last_minute', 'money_revenue_last_minute',
-            'sharpeningstone_revenue_last_minute',
         ]
         missing_keys = [k for k in required_keys if k not in raw_user_state]
         if missing_keys:
