@@ -3,6 +3,7 @@ from typing import Dict
 import logging
 import threading
 import pickle
+import lightgbm as lgb
 from pathlib import Path
 from app.ml_tools import state_fe_standart
 
@@ -160,8 +161,8 @@ class MultiArmedBandit:
 
 class LinUCB:
     """
-    Linear Upper Confidence Bound (LinUCB) - ко��текстный бандит.
-    Использует линейную модель д��я предсказания награды на основе контекста (состояния игрока).
+    Linear Upper Confidence Bound (LinUCB) - контекстный бандит.
+    Использует линейную модель для предсказания награды на основе контекста (состояния игрока).
 
     Для каждого коэффициента (arm) строится линейная модель:
     reward = theta^T * context
@@ -458,3 +459,147 @@ class LinUCB:
         logger.info(f"LinUCB agent loaded from {filepath} (total_pulls={agent.total_pulls})")
 
         return agent
+
+
+
+class UpliftUCB:
+    """
+    Upper Confidence Bound (UCB) - контекстный бандит.
+    Использует модель для предсказания награды на основе контекста (состояния игрока).
+
+    Для каждого коэффициента (arm) строится модель
+
+    Выбор действия основан на верхней доверительной границе (UCB):
+    UCB = theta^T * context + alpha * sqrt(context^T * A^(-1) * context)
+    """
+
+    def __init__(
+        self,
+        default_coef: float = 0.75,
+        coefficients: list = None,
+        model_path: str = None,
+        feature_names_path: str = None,
+        uplift_threshold: float = 0.005
+    ):
+        """
+        Args:
+            default_coef: Дефолтный размер награды выдаваемый игрокам по умолчанию
+            coefficients: Возмножные размеры наград, которые может выдать алгоритм
+            model_path: Путь к легкой модели в памяти при старте сервера
+            feature_names_path: Правильный порядок признаков
+            uplift_threshold: Граница прироста вероятности просмотра рекламы при которой выдается более выскоая награда
+        """
+        if coefficients is None:
+            coefficients = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+
+
+        # Загружаем легкую модель в память при старте сервера
+        self.model, self.feature_names = self.load(model_path, feature_names_path)
+
+        self.default_coef = default_coef
+        self.upgrade_coefs = coefficients
+
+        # Собираем все варианты в один массив (дефолт всегда первый [0])
+        self.all_coefs = np.array([self.default_coef] + self.upgrade_coefs)
+        
+        self.uplift_threshold = uplift_threshold
+
+        # Статистика
+        self.arm_pulls = {arm: 0 for arm in self.all_coefs}
+        self.total_pulls = 0
+
+        # Thread safety
+        self._lock = threading.Lock()
+
+        logger.info(
+            f"Uplift initialized with {len(self.all_coefs)} arms"
+        )
+
+    @staticmethod
+    def safe_div(a, b):
+        if b == 0:
+            return 0
+        return a / b
+    
+    def _build_features(self, raw_user_state: Dict, coef: float):
+        features = {}
+        
+        # Заполняем сырые данные
+        features['user_snapshot_active_state.ad_cnt_div_user_snapshot_active_state.game_minute'] = self.safe_div(raw_user_state['ad_cnt'], raw_user_state['game_minute'])
+        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.game_minute'] = self.safe_div(coef, raw_user_state['game_minute'])
+        features['init_event.ad_views_cnt_div_ad_offer.PlayTimeMinutes'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['game_minute'])
+        features['init_event.ad_views_cnt_div_user_snapshot_active_state.money_ad_reward_calculate'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['money_ad_reward_calculate'])
+        features['user_snapshot_active_state.game_minute'] = raw_user_state['game_minute']
+        features['ad_offer.PlayTimeMinutes_minus_init_event.playtime'] = raw_user_state['game_minute'] - raw_user_state['playtime']
+        features['ad_offer.PlayTimeMinutes_mult_user_snapshot_active_state.game_minute'] = raw_user_state['game_minute'] * raw_user_state['game_minute']
+        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.health_ratio'] = self.safe_div(coef, raw_user_state['health_ratio'])
+        features['init_event.ad_views_cnt_div_init_event.inapp_cnt'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['inapp_cnt'])
+        features['ad_offer.recommended_coefficient'] = coef
+        features['user_snapshot_active_state.itemtoken_balance'] = raw_user_state['itemtoken_balance']
+        features['user_snapshot_active_state.health_ratio_minus_user_snapshot_active_state.boss_kills_last_minute'] = raw_user_state['health_ratio'] - raw_user_state['boss_kills_last_minute']
+        features['init_event.ad_views_cnt_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['last_boss'])
+        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.damage_lvl'] = self.safe_div(coef, raw_user_state['damage_lvl'])
+        features['init_event.global_death_count_div_init_event.ad_views_cnt'] = self.safe_div(raw_user_state['global_death_count'], raw_user_state['ad_views_cnt'])
+        features['user_snapshot_active_state.kills_last_minute_plus_user_snapshot_active_state.upgrade_activity_last_minute'] = raw_user_state['kills_last_minute'] + raw_user_state['upgrade_activity_last_minute']
+        features['user_snapshot_active_state.game_minute_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state['game_minute'], raw_user_state['last_boss'])
+        features['user_snapshot_active_state.itemtoken_revenue_last_minute_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state['itemtoken_revenue_last_minute'], raw_user_state['last_boss'])
+        features['user_snapshot_active_state.money_revenue_last_minute_div_user_snapshot_active_state.money_ad_reward_calculate'] = self.safe_div(raw_user_state['money_revenue_last_minute'], raw_user_state['money_ad_reward_calculate'])
+        features['user_snapshot_active_state.itemtoken_revenue_last_minute_minus_user_snapshot_active_state.sharpeningstone_revenue_last_minute'] = raw_user_state['itemtoken_revenue_last_minute'] - raw_user_state['sharpeningstone_revenue_last_minute']
+        
+        return [features.get(name, 0.0) for name in self.feature_names]
+
+    def get_best_offer(self, raw_user_state: Dict):
+        """
+        Главный метод, который дергает игра.
+        """
+        # 1. Создаем батч (матрицу) данных для ОДНОГО игрока, 
+        # но сразу для ВСЕХ возможных коэффициентов наград
+        batch_features = []
+        for coef in self.all_coefs:
+            batch_features.append(self._build_features(raw_user_state, coef))
+            
+        batch_matrix = np.array(batch_features)
+        
+        # 2. ДЕЛАЕМ ПРЕДИКТ ВСЕХ ВАРИАНТОВ ЗА 1 ВЫЗОВ (очень быстро!)
+        probabilities = self.model.predict(batch_matrix)
+        
+        # probabilities[0] - это шанс при дефолте (0.75)
+        base_prob = probabilities[0]
+        
+        # 3. Ищем минимальный коэффициент, который пробивает порог Uplift
+        best_coef = self.default_coef
+        
+        # Начинаем проверять с индекса 1 (то есть с коэффициента 1.0 и выше)
+        for i in range(1, len(self.all_coefs)):
+            current_prob = probabilities[i]
+            uplift = current_prob - base_prob
+            
+            if uplift >= self.uplift_threshold:
+                best_coef = self.all_coefs[i]
+                break # Нашли первый (самый дешевый) подходящий бонус — выходим!
+                
+        return float(best_coef)
+
+    def load(self, model_path: str, feature_names_path: str):
+        """
+        Загружает модель с диска.
+
+        Returns:
+            Модель
+        """
+        try:
+            model = lgb.Booster(model_file=model_path)
+        except Exception as e:
+            logger.exception(f"Критическая ошибка при загрузке модели LightGBM: {e}")
+            raise
+        logger.info('model loaded')
+        
+        try:
+            with open(feature_names_path, 'r', encoding='utf-8') as f:
+                feature_names = [line.strip() for line in f]
+        except Exception as e:
+            logger.exception(f"Критическая ошибка при загрузке признаков модели: {e}")
+            raise
+        logger.info('features loaded')
+
+        return model, feature_names

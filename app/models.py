@@ -26,7 +26,6 @@ class InitEvent(BaseEvent):
     ad_views_cnt: int = Field(..., ge=0)
     global_death_count: int = Field(..., ge=0)
     last_session_playtime: int = Field(..., ge=0)
-    # playtime: int = Field(..., ge=0)
 
 
 class UserSnapshotActiveState(BaseEvent):
