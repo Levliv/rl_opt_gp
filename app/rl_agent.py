@@ -523,28 +523,46 @@ class UpliftUCB:
     
     def _build_features(self, raw_user_state: Dict, coef: float):
         features = {}
-        
-        # Заполняем сырые данные
-        features['user_snapshot_active_state.ad_cnt_div_user_snapshot_active_state.game_minute'] = self.safe_div(raw_user_state['ad_cnt'], raw_user_state['game_minute'])
-        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.game_minute'] = self.safe_div(coef, raw_user_state['game_minute'])
-        features['init_event.ad_views_cnt_div_ad_offer.PlayTimeMinutes'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['game_minute'])
-        features['init_event.ad_views_cnt_div_user_snapshot_active_state.money_ad_reward_calculate'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['money_ad_reward_calculate'])
-        features['user_snapshot_active_state.game_minute'] = raw_user_state['game_minute']
-        features['ad_offer.PlayTimeMinutes_minus_init_event.playtime'] = raw_user_state['game_minute'] - raw_user_state['playtime']
-        features['ad_offer.PlayTimeMinutes_mult_user_snapshot_active_state.game_minute'] = raw_user_state['game_minute'] * raw_user_state['game_minute']
-        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.health_ratio'] = self.safe_div(coef, raw_user_state['health_ratio'])
-        features['init_event.ad_views_cnt_div_init_event.inapp_cnt'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['inapp_cnt'])
+
+        # Проверяем отсутствующие поля и логируем предупреждение
+        required_keys = [
+            'ad_cnt', 'game_minute', 'ad_views_cnt', 'money_ad_reward_calculate',
+            'playtime', 'health_ratio', 'inapp_cnt', 'itemtoken_balance',
+            'boss_kills_last_minute', 'last_boss', 'damage_lvl', 'global_death_count',
+            'kills_last_minute', 'upgrade_activity_last_minute',
+            'itemtoken_revenue_last_minute', 'money_revenue_last_minute',
+            'sharpeningstone_revenue_last_minute',
+        ]
+        missing_keys = [k for k in required_keys if k not in raw_user_state]
+        if missing_keys:
+            device_id = raw_user_state.get('appmetrica_device_id', 'unknown')
+            session_id = raw_user_state.get('session_id', 'unknown')
+            logger.warning(
+                f"Missing keys in _build_features for device={device_id}, session={session_id}, "
+                f"using 0 for: {missing_keys}"
+            )
+
+
+        features['user_snapshot_active_state.ad_cnt_div_user_snapshot_active_state.game_minute'] = self.safe_div(raw_user_state.get('ad_cnt', 0), raw_user_state.get('game_minute', 0))
+        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.game_minute'] = self.safe_div(coef, raw_user_state.get('game_minute', 0))
+        features['user_snapshot_active_state.game_minute'] = raw_user_state.get('game_minute', 0)
+        features['init_event.ad_views_cnt_div_user_snapshot_active_state.money_ad_reward_calculate'] = self.safe_div(raw_user_state.get('ad_views_cnt', 0), raw_user_state.get('money_ad_reward_calculate', 0))
+        features['init_event.ad_views_cnt_div_init_event.inapp_cnt'] = self.safe_div(raw_user_state.get('ad_views_cnt', 0), raw_user_state.get('inapp_cnt', 0))
+        features['init_event.ad_views_cnt_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state.get('ad_views_cnt', 0), raw_user_state.get('last_boss', 0))
+        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.health_ratio'] = self.safe_div(coef, raw_user_state.get('health_ratio', 0))
+        features['init_event.global_death_count_div_init_event.ad_views_cnt'] = self.safe_div(raw_user_state.get('global_death_count', 0), raw_user_state.get('ad_views_cnt', 0))
+        features['init_event.ad_views_cnt_div_init_event.session_cnt'] = self.safe_div(raw_user_state.get('ad_views_cnt', 0), raw_user_state.get('session_cnt', 0))
+        features['init_event.inapp_cnt_div_ad_offer.recommended_coefficient'] = self.safe_div(raw_user_state.get('inapp_cnt', 0), coef)
+        features['init_event.avg_playtime_lifetime_mult_user_snapshot_active_state.game_minute'] = raw_user_state.get('avg_playtime_lifetime', 0) * raw_user_state.get('game_minute', 0)
+        features['user_snapshot_active_state.itemtoken_balance'] = raw_user_state.get('itemtoken_balance', 0)
+        features['init_event.ad_views_cnt_div_user_snapshot_active_state.health_ratio'] = self.safe_div(raw_user_state.get('ad_views_cnt', 0), raw_user_state.get('health_ratio', 0))
+        features['user_snapshot_active_state.health_ratio_minus_user_snapshot_active_state.boss_kills_last_minute'] = raw_user_state.get('health_ratio', 0) - raw_user_state.get('boss_kills_last_minute', 0)
         features['ad_offer.recommended_coefficient'] = coef
-        features['user_snapshot_active_state.itemtoken_balance'] = raw_user_state['itemtoken_balance']
-        features['user_snapshot_active_state.health_ratio_minus_user_snapshot_active_state.boss_kills_last_minute'] = raw_user_state['health_ratio'] - raw_user_state['boss_kills_last_minute']
-        features['init_event.ad_views_cnt_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state['ad_views_cnt'], raw_user_state['last_boss'])
-        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.damage_lvl'] = self.safe_div(coef, raw_user_state['damage_lvl'])
-        features['init_event.global_death_count_div_init_event.ad_views_cnt'] = self.safe_div(raw_user_state['global_death_count'], raw_user_state['ad_views_cnt'])
-        features['user_snapshot_active_state.kills_last_minute_plus_user_snapshot_active_state.upgrade_activity_last_minute'] = raw_user_state['kills_last_minute'] + raw_user_state['upgrade_activity_last_minute']
-        features['user_snapshot_active_state.game_minute_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state['game_minute'], raw_user_state['last_boss'])
-        features['user_snapshot_active_state.itemtoken_revenue_last_minute_div_user_snapshot_active_state.last_boss'] = self.safe_div(raw_user_state['itemtoken_revenue_last_minute'], raw_user_state['last_boss'])
-        features['user_snapshot_active_state.money_revenue_last_minute_div_user_snapshot_active_state.money_ad_reward_calculate'] = self.safe_div(raw_user_state['money_revenue_last_minute'], raw_user_state['money_ad_reward_calculate'])
-        features['user_snapshot_active_state.itemtoken_revenue_last_minute_minus_user_snapshot_active_state.sharpeningstone_revenue_last_minute'] = raw_user_state['itemtoken_revenue_last_minute'] - raw_user_state['sharpeningstone_revenue_last_minute']
+        features['ad_offer.recommended_coefficient_mult_init_event.ad_views_cnt'] = coef * raw_user_state.get('ad_views_cnt', 0)
+        features['ad_offer.recommended_coefficient_div_user_snapshot_active_state.damage_lvl'] = self.safe_div(coef, raw_user_state.get('damage_lvl', 0))
+        features['user_snapshot_active_state.money_revenue_last_minute_div_user_snapshot_active_state.money_ad_reward_calculate'] = self.safe_div(raw_user_state.get('money_revenue_last_minute', 0), raw_user_state.get('money_ad_reward_calculate', 0))
+        features['user_snapshot_active_state.kills_last_minute_plus_user_snapshot_active_state.upgrade_activity_last_minute'] = raw_user_state.get('kills_last_minute', 0) + raw_user_state.get('upgrade_activity_last_minute', 0)
+        features['init_event.inapp_cnt_plus_user_snapshot_active_state.game_minute'] = raw_user_state.get('inapp_cnt', 0) + raw_user_state.get('game_minute', 0)
         
         return [features.get(name, 0.0) for name in self.feature_names]
 
