@@ -287,7 +287,7 @@ async def handle_init_event(event: InitEvent):
         # Сохраняем init_data для всех групп (нужны для mab и uplift)
         session_key = (event.appmetrica_device_id, event.session_id)
         session_init_data[session_key] = event.model_dump()
-        logger.info(f"Init event contains:\n{event}")
+        logger.info(f"Init event contains:\n{event.model_dump()}")
         # На init event всегда возвращаем дефолтный коэффициент 1.0
         coefficient = 1.0
 
