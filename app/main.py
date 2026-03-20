@@ -18,7 +18,7 @@ from app.ab_user_splitter import user_splitter
 from app.s3_storage import S3CheckpointStorage
 
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.rl_agent import LinUCB, UpliftUCB
+from app.rl_agent import UpliftUCB
 import numpy as np
 
 # Настройка логирования
@@ -194,8 +194,8 @@ TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent20260227.pkl"
 # )
 
 upliftUCB = UpliftUCB(
-    model_path="app/ml_models/ad_reward_model_260319.txt",
-    feature_names_path="app/ml_models/feature_names_260319.txt"
+    model_path="app/ml_models/ad_reward_model_260320.txt",
+    feature_names_path="app/ml_models/feature_names_260320.txt"
     )
 
 # _save_task = None
@@ -226,7 +226,7 @@ session_init_data = SlidingTTLCache(maxsize=50000, ttl=3600)
 # TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
 session_contexts = SlidingTTLCache(maxsize=50000, ttl=3600)
 
-GROUPS = ["default", "mab", "uplift"]
+GROUPS = ["default", "rl", "uplift"]
 SALT = "v1"
 
 
@@ -330,7 +330,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
         )
         reward_source = GROUPS[split_group_id]
 
-        if reward_source == "mab":
+        if reward_source == "rl":
             # Получаем init_data для LinUCB (нужны те же фичи что в uplift)
             session_key = (event.appmetrica_device_id, event.session_id)
             init_data = session_init_data.get(session_key, {})
@@ -366,7 +366,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             return AdRewardResponse(
                 session_id=event.session_id,
                 appmetrica_device_id=event.appmetrica_device_id,
-                reward_source="mab",
+                reward_source="rl",
                 recommended_coefficient=coefficient,
                 game_minute=event.game_minute
             )
