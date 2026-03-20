@@ -226,7 +226,7 @@ session_init_data = SlidingTTLCache(maxsize=50000, ttl=3600)
 # TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
 session_contexts = SlidingTTLCache(maxsize=50000, ttl=3600)
 
-GROUPS = ["default", "rl", "uplift"]
+GROUPS = ["default", "mab", "uplift"]
 SALT = "v1"
 
 
@@ -330,7 +330,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
         )
         reward_source = GROUPS[split_group_id]
 
-        if reward_source == "rl":
+        if reward_source == "mab":
             # Получаем init_data для LinUCB (нужны те же фичи что в uplift)
             session_key = (event.appmetrica_device_id, event.session_id)
             init_data = session_init_data.get(session_key, {})
@@ -366,7 +366,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             return AdRewardResponse(
                 session_id=event.session_id,
                 appmetrica_device_id=event.appmetrica_device_id,
-                reward_source="rl",
+                reward_source=reward_source,
                 recommended_coefficient=coefficient,
                 game_minute=event.game_minute
             )
