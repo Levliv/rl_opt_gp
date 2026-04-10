@@ -18,7 +18,7 @@ from app.ab_user_splitter import user_splitter
 from app.s3_storage import S3CheckpointStorage
 
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.rl_agent import UpliftUCB, contextMAB
+from app.rl_agent import UpliftUCB, ContextMAB
 import numpy as np
 
 # Настройка логирования
