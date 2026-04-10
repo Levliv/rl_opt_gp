@@ -18,7 +18,7 @@ from app.ab_user_splitter import user_splitter
 from app.s3_storage import S3CheckpointStorage
 
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.rl_agent import UpliftUCB
+from app.rl_agent import UpliftUCB, contextMAB
 import numpy as np
 
 # Настройка логирования
@@ -193,9 +193,14 @@ TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent20260227.pkl"
 #     penalty_weight=0.025
 # )
 
-upliftUCB = UpliftUCB(
-    model_path="app/ml_models/ad_reward_model_260320.txt",
-    feature_names_path="app/ml_models/feature_names_260320.txt"
+# upliftUCB = UpliftUCB(
+#     model_path="app/ml_models/ad_reward_model_260320.txt",
+#     feature_names_path="app/ml_models/feature_names_260320.txt"
+#     )
+
+contextMAB = ContextMAB(
+    model_path="app/ml_models/ad_reward_model_260407.cbm",
+    feature_names_path="app/ml_models/feature_names_260407.txt"
     )
 
 # _save_task = None
@@ -330,23 +335,32 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
         )
         reward_source = GROUPS[split_group_id]
 
+        session_key = (event.appmetrica_device_id, event.session_id)
+        init_data = session_init_data.get(session_key, {})
+
+        if not init_data:
+            logger.warning(f"No init_data for session_key={session_key}, feature engineering may be incomplete")
+        
+        state = event.model_dump() | init_data # Объединяем init_data и snapshot для полного state
+
         if reward_source == "rl":
-            # Получаем init_data для LinUCB (нужны те же фичи что в uplift)
-            session_key = (event.appmetrica_device_id, event.session_id)
-            init_data = session_init_data.get(session_key, {})
-
-            if not init_data:
-                logger.warning(f"No init_data for session_key={session_key}, feature engineering may be incomplete")
-
-            # Объединяем init_data и snapshot для полного state
-            state = event.model_dump() | init_data
-
-            coefficient = await asyncio.to_thread(upliftUCB.get_best_offer, state)
+            coefficient = await asyncio.to_thread(contextMAB.get_best_offer, state)
 
             logger.info(
-                f"Snapshot response [UpliftUCB]: device={event.appmetrica_device_id}, "
+                f"Snapshot response [ContextMAB]: device={event.appmetrica_device_id}, "
                 f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
             )
+
+
+
+            # coefficient = await asyncio.to_thread(upliftUCB.get_best_offer, state)
+
+            # logger.info(
+            #     f"Snapshot response [UpliftUCB]: device={event.appmetrica_device_id}, "
+            #     f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
+            # )
+
+
 
             # # Извлекаем контекст из полного state (применяется state_fe_standart)
             # context = LinUCB.extract_context(state)
@@ -372,14 +386,6 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
             )
 
         elif reward_source == "uplift":
-            # Получаем init_data для uplift модели
-            session_key = (event.appmetrica_device_id, event.session_id)
-            init_data = session_init_data.get(session_key, {})
-
-            if not init_data:
-                logger.warning(f"No init_data for session_key={session_key} (uplift), feature engineering may be incomplete")
-
-            state = event.model_dump() | init_data
             fe_state = state_fe_standart(state)
 
             pool = Pool(
