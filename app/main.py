@@ -199,8 +199,8 @@ TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent20260227.pkl"
 #     )
 
 contextMAB = ContextMAB(
-    model_path="app/ml_models/ad_reward_model_260407.cbm",
-    feature_names_path="app/ml_models/feature_names_260407.txt"
+    model_path="app/ml_models/ad_reward_model_20260407.cbm",
+    feature_names_path="app/ml_models/feature_names_20260407.txt"
     )
 
 # _save_task = None
