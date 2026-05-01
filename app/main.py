@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from prometheus_fastapi_instrumentator import Instrumentator
 import logging
 import traceback
 import asyncio
@@ -69,7 +70,7 @@ app = FastAPI(
     openapi_url=None if DISABLE_DOCS else "/openapi.json",
     # lifespan=lifespan,
 )
-
+Instrumentator().instrument(app).expose(app)
 # Глобальная авторизация по API ключу
 API_KEY = os.getenv("API_KEY")
 
