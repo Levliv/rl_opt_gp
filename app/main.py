@@ -119,7 +119,7 @@ async def logging_middleware(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     # Пропускаем публичные эндпоинты без авторизации
-    public_paths = ["/", "/health"]
+    public_paths = ["/", "/health", "/metrics"]
     if request.url.path in public_paths:
         return await call_next(request)
 
