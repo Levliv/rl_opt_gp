@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 from typing import Optional
 import boto3
 from botocore.config import Config as BotoConfig
@@ -149,6 +150,23 @@ class S3CheckpointStorage:
             return True
         except ClientError:
             return False
+
+    def get_last_modified(self, s3_key: str) -> Optional[datetime]:
+        """
+        Возвращает время последнего изменения файла в S3 (UTC).
+        Возвращает None если файл не найден или S3 недоступен.
+        """
+        if not self.enabled:
+            return None
+        try:
+            response = self.s3_client.head_object(Bucket=self.bucket_name, Key=s3_key)
+            return response['LastModified']
+        except ClientError as e:
+            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                logger.info(f"File not found in S3: {s3_key}")
+            else:
+                logger.error(f"Failed to get LastModified for {s3_key}: {e}")
+            return None
 
     def list_checkpoints(self) -> list:
         """

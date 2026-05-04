@@ -7,19 +7,19 @@ import logging
 import traceback
 import asyncio
 from cachetools import TTLCache
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 import pickle
 from pathlib import Path
 import os
 
-from catboost import CatBoostClassifier, Pool
+from catboost import Pool
 from app.ml_tools import state_fe_standart, reward
 from app.ab_user_splitter import user_splitter
 from app.s3_storage import S3CheckpointStorage
 
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.rl_agent import UpliftUCB, ContextMAB
+from app.rl_agent import ContextMAB
 import numpy as np
 
 # Настройка логирования
@@ -33,32 +33,67 @@ logger = logging.getLogger(__name__)
 DISABLE_DOCS = os.getenv("DISABLE_DOCS", "true").lower() == "true"
 
 
-# @asynccontextmanager
-# async def lifespan(app):
-#     global linucb_agent, _save_task
-#     try:
-#         if await asyncio.to_thread(s3_storage.exists):
-#             logger.info("Trying to load LinUCB agent from S3...")
-#             if await asyncio.to_thread(s3_storage.download, TEMP_CHECKPOINT_PATH):
-#                 linucb_agent = await asyncio.to_thread(LinUCB.load, TEMP_CHECKPOINT_PATH)
-#                 Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
-#                 logger.info(f"LinUCB agent loaded from S3 (total_pulls={linucb_agent.total_pulls})")
-#             else:
-#                 logger.warning("Failed to download from S3, starting with fresh LinUCB agent")
-#         else:
-#             logger.info("No checkpoint in S3, starting with fresh LinUCB agent")
-#     except Exception as exc:
-#         logger.exception(f"Failed to load agent from S3: {exc}")
+MODEL_S3_KEY = "models/latest.cbm"
+NIGHTLY_CHECK_HOUR_UTC = 3
 
-#     _save_task = asyncio.create_task(periodic_save_agent())
-#     logger.info("Periodic agent save task started (every 6 hours)")
-#     yield
-#     if _save_task:
-#         _save_task.cancel()
-#         try:
-#             await _save_task
-#         except asyncio.CancelledError:
-#             pass
+
+async def periodic_model_check():
+    while True:
+        now = datetime.now(timezone.utc)
+        target = now.replace(hour=NIGHTLY_CHECK_HOUR_UTC, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        sleep_seconds = (target - now).total_seconds()
+        logger.info(f"Next model check at {target.isoformat()} UTC (in {sleep_seconds/3600:.1f}h)")
+
+        await asyncio.sleep(sleep_seconds)
+
+        try:
+            s3_last_modified = await asyncio.to_thread(s3_storage.get_last_modified, MODEL_S3_KEY)
+
+            if s3_last_modified is None:
+                logger.info(f"Nightly model check: {MODEL_S3_KEY} not found in S3, keeping current model")
+                continue
+
+            if s3_last_modified <= contextMAB.model_loaded_at:
+                logger.info(
+                    f"Nightly model check: no new version "
+                    f"(S3: {s3_last_modified.isoformat()}, loaded: {contextMAB.model_loaded_at.isoformat()})"
+                )
+                continue
+
+            logger.info(
+                f"Nightly model check: new version found "
+                f"(S3: {s3_last_modified.isoformat()}), reloading..."
+            )
+            temp_path = "/tmp/model_nightly.cbm"
+            try:
+                ok = await asyncio.to_thread(s3_storage.download, temp_path, MODEL_S3_KEY)
+                if not ok:
+                    logger.error("Nightly model check: S3 download failed, keeping current model")
+                    continue
+                success = await asyncio.to_thread(contextMAB.reload, temp_path)
+                if success:
+                    logger.info("Nightly model check: reload SUCCESS")
+                else:
+                    logger.error("Nightly model check: model loaded but reload failed, keeping current model")
+            finally:
+                Path(temp_path).unlink(missing_ok=True)
+
+        except Exception as exc:
+            logger.exception(f"Nightly model check error: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(periodic_model_check())
+    logger.info("Nightly model check task started")
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -68,7 +103,7 @@ app = FastAPI(
     docs_url=None if DISABLE_DOCS else "/docs",
     redoc_url=None if DISABLE_DOCS else "/redoc",
     openapi_url=None if DISABLE_DOCS else "/openapi.json",
-    # lifespan=lifespan,
+    lifespan=lifespan,
 )
 Instrumentator().instrument(app).expose(app)
 # Глобальная авторизация по API ключу
@@ -173,38 +208,17 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# LinUCB контекстный бандит для оптимизации коэффициента награды за рекламу
-# Использует состояние игрока (контекст) для более точного подбора коэффициента
-# context_dim=30 - использует те же 30 фичей, что и uplift модель (через state_fe_standart)
-
-# Настройка S3 storage для сохранения состояния агента
+# Настройка S3 storage
 s3_storage = S3CheckpointStorage(
     bucket_name=os.getenv("S3_BUCKET"),  # Если не указан, S3 будет отключен
     prefix="linucb_checkpoints",
     enabled=os.getenv("S3_ENABLED", "true").lower() == "true"
 )
 
-# Временный файл для загрузки из S3 (удаляется после загрузки)
-TEMP_CHECKPOINT_PATH = "/tmp/linucb_agent20260227.pkl"
-
-# linucb_agent = LinUCB(
-#     coefficients=[0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-#     context_dim=30,
-#     alpha=1.0,
-#     penalty_weight=0.025
-# )
-
-# upliftUCB = UpliftUCB(
-#     model_path="app/ml_models/ad_reward_model_260320.txt",
-#     feature_names_path="app/ml_models/feature_names_260320.txt"
-#     )
-
 contextMAB = ContextMAB(
     model_path="app/ml_models/ad_reward_model_20260407.cbm",
     feature_names_path="app/ml_models/feature_names_20260407.txt"
     )
-
-# _save_task = None
 
 with open("app/ml_models_pkl/ad_model_drop_device.pkl", "rb") as file:
     ad_prob_model = pickle.load(file)
@@ -227,39 +241,8 @@ class SlidingTTLCache(TTLCache):
 # TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
 session_init_data = SlidingTTLCache(maxsize=50000, ttl=3600)
 
-# Хранилище контекстов для LinUCB: (appmetrica_device_id, session_id) -> context_vector
-# Reward всегда относится к последнему контексту сессии
-# TTL 1 час, макс 50000 сессий, TTL обновляется при каждом доступе (sliding)
-session_contexts = SlidingTTLCache(maxsize=50000, ttl=3600)
-
 GROUPS = ["default", "rl", "uplift"]
 SALT = "v1"
-
-
-# async def periodic_save_agent():
-#     while True:
-#         try:
-#             await asyncio.sleep(6 * 60 * 60)
-#             logger.info("Periodic agent save: starting...")
-#             await asyncio.to_thread(linucb_agent.save, TEMP_CHECKPOINT_PATH)
-#             s3_uploaded = await asyncio.to_thread(s3_storage.upload, TEMP_CHECKPOINT_PATH)
-#             Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
-#             if s3_uploaded:
-#                 logger.info(f"Periodic agent save: SUCCESS, total_pulls={linucb_agent.total_pulls}")
-#             else:
-#                 logger.warning("Periodic agent save: S3 disabled or upload failed")
-#         except asyncio.CancelledError:
-#             logger.info("Periodic agent save: cancelled, final save...")
-#             try:
-#                 linucb_agent.save(TEMP_CHECKPOINT_PATH)
-#                 s3_storage.upload(TEMP_CHECKPOINT_PATH)
-#                 Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
-#             except Exception:
-#                 logger.exception("Final save failed")
-#             return
-#         except Exception as exc:
-#             logger.exception(f"Periodic agent save: ERROR - {exc}")
-
 
 
 @app.get("/")
@@ -271,7 +254,6 @@ async def root():
         "version": "1.0.0",
         "linucb_stats": None
     }
-    # linucb_agent.get_stats()
 
 
 @app.get("/health")
@@ -352,32 +334,6 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
                 f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
             )
 
-
-
-            # coefficient = await asyncio.to_thread(upliftUCB.get_best_offer, state)
-
-            # logger.info(
-            #     f"Snapshot response [UpliftUCB]: device={event.appmetrica_device_id}, "
-            #     f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
-            # )
-
-
-
-            # # Извлекаем контекст из полного state (применяется state_fe_standart)
-            # context = LinUCB.extract_context(state)
-
-            # # Сохраняем контекст с ключом (appmetrica_device_id, session_id)
-            # # Reward всегда относится к последнему контексту — перезаписываем при каждом snapshot
-            # context_key = (event.appmetrica_device_id, event.session_id)
-            # session_contexts[context_key] = context
-
-            # coefficient = await asyncio.to_thread(linucb_agent.select_action, context)
-
-            # logger.info(
-            #     f"Snapshot response [mab]: device={event.appmetrica_device_id}, "
-            #     f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
-            # )
-
             return AdRewardResponse(
                 session_id=event.session_id,
                 appmetrica_device_id=event.appmetrica_device_id,
@@ -437,114 +393,34 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
 
 @app.post("/events/reward")
 async def handle_reward_event(event: RewardEvent):
-    # """
-    # Обрабатывает reward event - события рекламы (CLICKED/IGNORED).
-
-    # CLICKED - пользователь принял оффер и посмотрел рекламу
-    # IGNORED - пользователь не принял оффер на просмотр рекламы
-
-    # Обучает MAB агента на основе полученного коэффициента и результата.
-    # """
-    # try:
-    #     logger.info(
-    #         f"Reward event: device={event.appmetrica_device_id}, session={event.session_id}, "
-    #         f"type={event.event_type}, source={event.reward_source}, "
-    #         f"coefficient={event.recommended_coefficient}, reward={event.recommended_reward}, "
-    #         f"PlayTimeMinutes={event.PlayTimeMinutes}"
-    #     )
-
-    #     if event.reward_source == "mab":
-    #         clicked = (event.event_type == "CLICKED")
-
-    #         # Получаем последний контекст сессии (без привязки к минуте)
-    #         context_key = (event.appmetrica_device_id, event.session_id)
-    #         context = session_contexts.get(context_key)
-
-    #         if context is not None:
-    #             await asyncio.to_thread(linucb_agent.update, event.recommended_coefficient, context, clicked)
-
-    #             logger.info(
-    #                 f"LinUCB updated: device={event.appmetrica_device_id}, session={event.session_id}, "
-    #                 f"coefficient={event.recommended_coefficient}, clicked={clicked}, "
-    #                 f"total_pulls={linucb_agent.total_pulls}"
-    #             )
-
-    #             return {
-    #                 "status": "ok",
-    #                 "session_id": event.session_id,
-    #                 "event_type": event.event_type,
-    #                 "linucb_updated": True
-    #             }
-    #         else:
-    #             # Контекст не найден - возможно, событие пришло раньше snapshot или после очистки
-    #             logger.warning(
-    #                 f"Context not found: device={event.appmetrica_device_id}, session={event.session_id}, "
-    #                 f"active_contexts={len(session_contexts)}. LinUCB update skipped."
-    #             )
-
-    #             return {
-    #                 "status": "ok",
-    #                 "session_id": event.session_id,
-    #                 "event_type": event.event_type,
-    #                 "linucb_updated": False,
-    #                 "reason": "context_not_found"
-    #             }
-
     return {
-            "status": "ok",
-            "session_id": event.session_id,
-            "event_type": event.event_type,
-            "mab_updated": False
-        }
-
-    # except Exception as exc:
-    #     logger.exception(
-    #         f"ERROR in /events/reward: device={event.appmetrica_device_id}, "
-    #         f"session={event.session_id}, type={event.event_type}: {exc}"
-    #     )
-    #     raise
+        "status": "ok",
+        "session_id": event.session_id,
+        "event_type": event.event_type,
+        "mab_updated": False
+    }
 
 
-@app.get("/agent/stats")
-async def get_agent_stats():
-    # """Возвращает статистику LinUCB агента"""
-    # return {
-    #     "linucb": linucb_agent.get_stats(),
-    #     "session_contexts_count": len(session_contexts)
-    # }
-    return {}
+@app.post("/model/reload")
+async def reload_model(s3_key: str):
+    """
+    Горячая замена модели ContextMAB из S3 без перезапуска сервиса.
+    s3_key: путь к файлу .cbm в S3 (например, models/ad_reward_model_v2.cbm)
+    """
+    temp_path = "/tmp/model_reload.cbm"
+    try:
+        ok = await asyncio.to_thread(s3_storage.download, temp_path, s3_key)
+        if not ok:
+            return JSONResponse(status_code=400, content={"detail": f"Failed to download from S3: {s3_key}"})
 
+        success = await asyncio.to_thread(contextMAB.reload, temp_path)
+        if not success:
+            return JSONResponse(status_code=500, content={"detail": "Model downloaded but failed to load"})
 
-# @app.post("/agent/save")
-# async def save_agent():
-#     """
-#     Сохраняет текущее состояние LinUCB агента в S3.
-#     Полезно для ручного создания checkpoint перед важными изменениями.
-#     """
-#     try:
-#         await asyncio.to_thread(linucb_agent.save, TEMP_CHECKPOINT_PATH)
-#         s3_uploaded = await asyncio.to_thread(s3_storage.upload, TEMP_CHECKPOINT_PATH)
-#         Path(TEMP_CHECKPOINT_PATH).unlink(missing_ok=True)
-
-#         if s3_uploaded:
-#             logger.info(f"Agent saved to S3, total_pulls={linucb_agent.total_pulls}")
-#             return {
-#                 "status": "ok",
-#                 "message": f"Agent saved to S3: s3://{s3_storage.bucket_name}/{s3_storage.prefix}/linucb_agent.pkl",
-#                 "total_pulls": linucb_agent.total_pulls,
-#                 "s3_enabled": True
-#             }
-#         else:
-#             logger.warning("Agent save: S3 disabled or upload failed")
-#             return {
-#                 "status": "warning",
-#                 "message": "S3 is disabled or upload failed. Agent state saved only in memory.",
-#                 "total_pulls": linucb_agent.total_pulls,
-#                 "s3_enabled": False
-#             }
-#     except Exception as exc:
-#         logger.exception(f"ERROR in /agent/save: {exc}")
-#         raise
+        logger.info(f"Model hot-reloaded from S3: {s3_key}")
+        return {"status": "ok", "s3_key": s3_key}
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
