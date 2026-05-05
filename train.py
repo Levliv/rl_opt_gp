@@ -215,6 +215,23 @@ def train_model(cleared_df):
     optimal_iterations = int(np.mean(best_iterations))
     print(f"\nОптимальное количество итераций: {optimal_iterations}")
 
+    # Оцениваем качество на test
+    eval_model = CatBoostClassifier(
+        iterations=optimal_iterations,
+        random_state=42,
+        learning_rate=params["learning_rate"],
+        class_weights=class_weights,
+        posterior_sampling=True,
+        bootstrap_type='Bernoulli',
+        subsample=params["subsample"],
+        verbose=100
+    )
+    eval_model.fit(X_train, y_train)
+
+    oof_auc = roc_auc_score(y_train, oof_predictions)
+    test_auc = roc_auc_score(y_test, eval_model.predict_proba(X_test)[:, 1])
+
+    # Переобучаем на всех данных с теми же итерациями
     final_model = CatBoostClassifier(
         iterations=optimal_iterations,
         random_state=42,
@@ -225,10 +242,7 @@ def train_model(cleared_df):
         subsample=params["subsample"],
         verbose=100
     )
-    final_model.fit(X_train, y_train)
-
-    oof_auc = roc_auc_score(y_train, oof_predictions)
-    test_auc = roc_auc_score(y_test, final_model.predict_proba(X_test)[:, 1])
+    final_model.fit(X, y)
     mean_cv_auc = float(np.mean(cv_scores))
 
     print(f"\nСредний CV ROC-AUC: {mean_cv_auc:.5f} ± {np.std(cv_scores):.5f}")
