@@ -22,6 +22,7 @@ task = Task.init(
     task_type=Task.TaskTypes.training
 )
 task.set_packages([
+    "clearml",
     "catboost==1.2.5",
     "numpy==1.26.4",
     "pandas",
