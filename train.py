@@ -92,7 +92,8 @@ def clean_numeric_column(series):
     return (series.astype(str)
             .str.replace(',', '.')
             .str.replace('/', '.')
-            .replace('None', np.nan)
+            .replace({'None': np.nan, 'Infinito': np.nan, '-Infinito': np.nan,
+                      'Infinity': np.nan, '-Infinity': np.nan, 'inf': np.nan, '-inf': np.nan})
             .astype(float))
 
 
