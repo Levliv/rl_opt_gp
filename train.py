@@ -18,7 +18,7 @@ from clearml import Task
 # --- CLEARML ---
 task = Task.init(
     project_name="RL Ad Reward",
-    task_name="Daily Model Retraining",
+    task_name="Weakly Model Retraining",
     task_type=Task.TaskTypes.training
 )
 task.set_packages([
@@ -33,7 +33,7 @@ task.execute_remotely(queue_name="training", exit_process=True)
 
 params = task.connect({
     "date_range_days": 30,
-    "min_roc_auc": 0.60,
+    "min_roc_auc": 0.78,
     "iterations": 1000,
     "learning_rate": 0.05,
     "n_splits": 5,
@@ -378,10 +378,31 @@ if not check_quality_gates(final_df):
 
 final_model, test_auc = train_model(final_df)
 
-# Валидация: не загружаем модель если качество упало
+# Валидация: не загружаем модель если качество упало ниже абсолютного порога
 min_roc_auc = params["min_roc_auc"]
 if test_auc < min_roc_auc:
     raise RuntimeError(f"Test ROC-AUC {test_auc:.4f} ниже порога {min_roc_auc} — модель не загружена в S3")
+
+# Валидация: не загружаем модель если она хуже предыдущей
+prev_tasks = Task.get_tasks(
+    project_name="RL Ad Reward",
+    task_name="Daily Model Retraining",
+    task_filter={"status": ["completed"]},
+)
+# Исключаем текущий таск (он ещё не completed, но на всякий случай)
+prev_tasks = [t for t in prev_tasks if t.id != task.id]
+if prev_tasks:
+    try:
+        scalars = prev_tasks[0].get_reported_scalars()
+        prev_auc = scalars["ROC-AUC"]["test"]["y"][-1]
+        print(f"ROC-AUC предыдущей модели: {prev_auc:.5f}, текущей: {test_auc:.5f}")
+        clearml_logger.report_scalar("ROC-AUC", "prev_model", value=prev_auc, iteration=1)
+        if test_auc <= prev_auc:
+            raise RuntimeError(
+                f"Новая модель ({test_auc:.4f}) не лучше предыдущей ({prev_auc:.4f}) — модель не загружена в S3"
+            )
+    except (KeyError, IndexError):
+        print("Не удалось получить метрики предыдущей модели из ClearML — пропускаем сравнение")
 
 # Сохранение и загрузка в S3
 feature_names = [c for c in final_df.columns if c != 'target']
