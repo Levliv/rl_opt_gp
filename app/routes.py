@@ -1,8 +1,6 @@
 import asyncio
 import logging
 from datetime import datetime
-from pathlib import Path
-
 from catboost import Pool
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
