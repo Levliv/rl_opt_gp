@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 CLEARML_PROJECT = "RL Ad Reward"
 CLEARML_TASK_NAME = "Weakly Model Retraining"
-NIGHTLY_CHECK_HOUR_UTC = 3
+NIGHTLY_CHECK_HOUR_UTC = 4
 
 
 def _get_latest_clearml_model():
