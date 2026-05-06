@@ -4,12 +4,36 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.state import s3_storage, contextMAB
+from clearml import Task as ClearMLTask
+
+from app.state import contextMAB
 
 logger = logging.getLogger(__name__)
 
-MODEL_S3_KEY = "models/latest.cbm"
+CLEARML_PROJECT = "RL Ad Reward"
+CLEARML_TASK_NAME = "Weakly Model Retraining"
 NIGHTLY_CHECK_HOUR_UTC = 3
+
+
+def _get_latest_clearml_model():
+    """Возвращает (local_path, completed_at) последней успешной задачи обучения."""
+    tasks = ClearMLTask.get_tasks(
+        project_name=CLEARML_PROJECT,
+        task_name=CLEARML_TASK_NAME,
+        task_filter={"status": ["completed"]},
+    )
+    if not tasks:
+        return None, None
+
+    latest = tasks[0]
+    artifact = latest.artifacts.get("model")
+    if artifact is None:
+        logger.warning("Последняя задача не содержит артефакт 'model'")
+        return None, None
+
+    local_path = artifact.get_local_copy()
+    completed_at = latest.data.completed
+    return local_path, completed_at
 
 
 async def periodic_model_check():
@@ -24,36 +48,25 @@ async def periodic_model_check():
         await asyncio.sleep(sleep_seconds)
 
         try:
-            s3_last_modified = await asyncio.to_thread(s3_storage.get_last_modified, MODEL_S3_KEY)
+            local_path, completed_at = await asyncio.to_thread(_get_latest_clearml_model)
 
-            if s3_last_modified is None:
-                logger.info(f"Nightly model check: {MODEL_S3_KEY} not found in S3, keeping current model")
+            if local_path is None:
+                logger.info("Nightly check: новая модель в ClearML не найдена")
                 continue
 
-            if s3_last_modified <= contextMAB.model_loaded_at:
+            if completed_at and completed_at <= contextMAB.model_loaded_at:
                 logger.info(
-                    f"Nightly model check: no new version "
-                    f"(S3: {s3_last_modified.isoformat()}, loaded: {contextMAB.model_loaded_at.isoformat()})"
+                    f"Nightly check: модель не обновлялась "
+                    f"(ClearML: {completed_at.isoformat()}, loaded: {contextMAB.model_loaded_at.isoformat()})"
                 )
                 continue
 
-            logger.info(
-                f"Nightly model check: new version found "
-                f"(S3: {s3_last_modified.isoformat()}), reloading..."
-            )
-            temp_path = "/tmp/model_nightly.cbm"
-            try:
-                ok = await asyncio.to_thread(s3_storage.download, temp_path, MODEL_S3_KEY)
-                if not ok:
-                    logger.error("Nightly model check: S3 download failed, keeping current model")
-                    continue
-                success = await asyncio.to_thread(contextMAB.reload, temp_path)
-                if success:
-                    logger.info("Nightly model check: reload SUCCESS")
-                else:
-                    logger.error("Nightly model check: reload failed, keeping current model")
-            finally:
-                Path(temp_path).unlink(missing_ok=True)
+            logger.info(f"Nightly check: найдена новая модель (completed: {completed_at}), загружаем...")
+            success = await asyncio.to_thread(contextMAB.reload, local_path)
+            if success:
+                logger.info("Nightly check: reload SUCCESS")
+            else:
+                logger.error("Nightly check: reload failed, keeping current model")
 
         except Exception as exc:
             logger.exception(f"Nightly model check error: {exc}")

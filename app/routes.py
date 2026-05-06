@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.ab_user_splitter import user_splitter
 from app.ml_tools import state_fe_standart, reward
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.state import s3_storage, contextMAB, ad_prob_model, ad_prob_model_features, session_init_data, GROUPS, SALT
+from app.state import contextMAB, ad_prob_model, ad_prob_model_features, session_init_data, GROUPS, SALT
 
 logger = logging.getLogger(__name__)
 
@@ -161,19 +161,17 @@ async def handle_reward_event(event: RewardEvent):
 
 
 @router.post("/model/reload")
-async def reload_model(s3_key: str):
-    """Горячая замена модели ContextMAB из S3 без перезапуска сервиса."""
-    temp_path = "/tmp/model_reload.cbm"
-    try:
-        ok = await asyncio.to_thread(s3_storage.download, temp_path, s3_key)
-        if not ok:
-            return JSONResponse(status_code=400, content={"detail": f"Failed to download from S3: {s3_key}"})
+async def reload_model():
+    """Горячая замена модели ContextMAB из последнего ClearML артефакта."""
+    from app.tasks import _get_latest_clearml_model
+    local_path, completed_at = await asyncio.to_thread(_get_latest_clearml_model)
 
-        success = await asyncio.to_thread(contextMAB.reload, temp_path)
-        if not success:
-            return JSONResponse(status_code=500, content={"detail": "Model downloaded but failed to load"})
+    if local_path is None:
+        return JSONResponse(status_code=404, content={"detail": "No completed model found in ClearML"})
 
-        logger.info(f"Model hot-reloaded from S3: {s3_key}")
-        return {"status": "ok", "s3_key": s3_key}
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
+    success = await asyncio.to_thread(contextMAB.reload, local_path)
+    if not success:
+        return JSONResponse(status_code=500, content={"detail": "Model found but failed to load"})
+
+    logger.info(f"Model hot-reloaded from ClearML (completed: {completed_at})")
+    return {"status": "ok", "completed_at": str(completed_at)}
