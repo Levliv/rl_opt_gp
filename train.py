@@ -253,7 +253,7 @@ def train_model(cleared_df):
     clearml_logger.report_scalar("ROC-AUC", "oof", value=oof_auc, iteration=1)
     clearml_logger.report_scalar("ROC-AUC", "test", value=test_auc, iteration=1)
 
-    return final_model, test_auc
+    return final_model, test_auc, X_test, y_test
 
 
 def upload_model_to_s3(local_path):
@@ -391,7 +391,7 @@ final_df = create_features(result)
 
 quality_ok = check_quality_gates(final_df)
 
-final_model, test_auc = train_model(final_df)
+final_model, test_auc, X_test, y_test = train_model(final_df)
 
 # Сохраняем модель всегда
 feature_names = [c for c in final_df.columns if c != 'target']
@@ -424,15 +424,21 @@ if production:
     prev_tasks = [t for t in prev_tasks if t.id != task.id]
     if prev_tasks:
         try:
-            scalars = prev_tasks[0].get_reported_scalars()
-            prev_auc = scalars["ROC-AUC"]["test"]["y"][-1]
-            print(f"ROC-AUC production модели: {prev_auc:.5f}, текущей: {test_auc:.5f}")
-            clearml_logger.report_scalar("ROC-AUC", "prev_production", value=prev_auc, iteration=1)
-            if test_auc <= prev_auc:
-                print(f"Новая модель ({test_auc:.4f}) не лучше production ({prev_auc:.4f}) — тег не присваивается")
-                production = False
-        except (KeyError, IndexError):
-            print("Не удалось получить метрики предыдущей production модели — пропускаем сравнение")
+            artifact = prev_tasks[0].artifacts.get("model")
+            if artifact is not None:
+                prod_model_path = artifact.get_local_copy()
+                prod_model = CatBoostClassifier()
+                prod_model.load_model(prod_model_path)
+                prod_auc = roc_auc_score(y_test, prod_model.predict_proba(X_test)[:, 1])
+                print(f"ROC-AUC на одних данных — production: {prod_auc:.5f}, новая: {test_auc:.5f}")
+                clearml_logger.report_scalar("ROC-AUC", "production_on_current_test", value=prod_auc, iteration=1)
+                if test_auc <= prod_auc:
+                    print(f"Новая модель ({test_auc:.4f}) не лучше production ({prod_auc:.4f}) — тег не присваивается")
+                    production = False
+            else:
+                print("У production задачи нет артефакта модели — пропускаем сравнение")
+        except Exception as e:
+            print(f"Не удалось сравнить с production моделью: {e} — пропускаем сравнение")
 
 if production:
     task.add_tags(["production"])
