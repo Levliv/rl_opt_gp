@@ -389,48 +389,53 @@ clearml_logger.report_scalar("Data", "final_rows", value=len(result), iteration=
 
 final_df = create_features(result)
 
-if not check_quality_gates(final_df):
-    raise RuntimeError("Данные не прошли quality gates — модель не обучена")
+quality_ok = check_quality_gates(final_df)
 
 final_model, test_auc = train_model(final_df)
 
-# Валидация: не загружаем модель если качество упало ниже абсолютного порога
-min_roc_auc = params["min_roc_auc"]
-if test_auc < min_roc_auc:
-    raise RuntimeError(f"Test ROC-AUC {test_auc:.4f} ниже порога {min_roc_auc} — модель не загружена в S3")
-
-# Валидация: не загружаем модель если она хуже предыдущей
-prev_tasks = Task.get_tasks(
-    project_name="RL Ad Reward",
-    task_name="Daily Model Retraining",
-    task_filter={"status": ["completed"]},
-)
-# Исключаем текущий таск (он ещё не completed, но на всякий случай)
-prev_tasks = [t for t in prev_tasks if t.id != task.id]
-if prev_tasks:
-    try:
-        scalars = prev_tasks[0].get_reported_scalars()
-        prev_auc = scalars["ROC-AUC"]["test"]["y"][-1]
-        print(f"ROC-AUC предыдущей модели: {prev_auc:.5f}, текущей: {test_auc:.5f}")
-        clearml_logger.report_scalar("ROC-AUC", "prev_model", value=prev_auc, iteration=1)
-        if test_auc <= prev_auc:
-            raise RuntimeError(
-                f"Новая модель ({test_auc:.4f}) не лучше предыдущей ({prev_auc:.4f}) — модель не загружена в S3"
-            )
-    except (KeyError, IndexError):
-        print("Не удалось получить метрики предыдущей модели из ClearML — пропускаем сравнение")
-
-# Сохранение и загрузка в S3
+# Сохраняем модель всегда
 feature_names = [c for c in final_df.columns if c != 'target']
 final_model.save_model(MODEL_PATH)
 with open(FEATURES_PATH, "w", encoding="utf-8") as f:
     f.write("\n".join(feature_names))
 
-s3_uploaded = upload_model_to_s3(MODEL_PATH)
 task.upload_artifact("model", artifact_object=MODEL_PATH)
 task.upload_artifact("features", artifact_object=FEATURES_PATH)
+print(f"Модель сохранена в ClearML артефакты. Test ROC-AUC: {test_auc:.5f}")
 
-if s3_uploaded:
-    print(f"\nГотово. Test ROC-AUC: {test_auc:.5f}. Модель загружена в S3 как {S3_MODEL_KEY}")
+# Проверки для тега production
+production = True
+
+if not quality_ok:
+    print("Quality gates не пройдены — тег 'production' не будет присвоен")
+    production = False
+
+min_roc_auc = params["min_roc_auc"]
+if test_auc < min_roc_auc:
+    print(f"Test ROC-AUC {test_auc:.4f} ниже порога {min_roc_auc} — тег 'production' не будет присвоен")
+    production = False
+
+if production:
+    prev_tasks = Task.get_tasks(
+        project_name="RL Ad Reward",
+        task_name=task.name,
+        task_filter={"status": ["completed"], "tags": ["production"]},
+    )
+    prev_tasks = [t for t in prev_tasks if t.id != task.id]
+    if prev_tasks:
+        try:
+            scalars = prev_tasks[0].get_reported_scalars()
+            prev_auc = scalars["ROC-AUC"]["test"]["y"][-1]
+            print(f"ROC-AUC production модели: {prev_auc:.5f}, текущей: {test_auc:.5f}")
+            clearml_logger.report_scalar("ROC-AUC", "prev_production", value=prev_auc, iteration=1)
+            if test_auc <= prev_auc:
+                print(f"Новая модель ({test_auc:.4f}) не лучше production ({prev_auc:.4f}) — тег не присваивается")
+                production = False
+        except (KeyError, IndexError):
+            print("Не удалось получить метрики предыдущей production модели — пропускаем сравнение")
+
+if production:
+    task.add_tags(["production"])
+    print(f"\nМодель получила тег 'production'. Test ROC-AUC: {test_auc:.5f}")
 else:
-    print(f"\nГотово. Test ROC-AUC: {test_auc:.5f}. Модель сохранена в ClearML артефакты (S3 недоступен)")
+    print(f"\nМодель сохранена без тега 'production'. Test ROC-AUC: {test_auc:.5f}")

@@ -20,7 +20,7 @@ def _get_latest_clearml_model():
     tasks = ClearMLTask.get_tasks(
         project_name=CLEARML_PROJECT,
         task_name=CLEARML_TASK_NAME,
-        task_filter={"status": ["completed"]},
+        task_filter={"status": ["completed"], "tags": ["production"], "order_by": ["-completed"]},
     )
     if not tasks:
         return None, None
