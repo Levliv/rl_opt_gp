@@ -23,7 +23,7 @@ class ContextMAB:
         model_path: str = None,
         feature_names_path: str = None,
         virtual_ensembles_count: int = 10,
-        penalty_weight: float = 0.001
+        penalty_weight: float = 0.01
     ):
         """
         Args:
