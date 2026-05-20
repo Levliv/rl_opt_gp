@@ -1,8 +1,16 @@
 import os
 import pickle
 from cachetools import TTLCache
+from prometheus_client import Histogram
 from app.s3_storage import S3CheckpointStorage
 from app.rl_agent import ContextMAB
+
+reward_coefficient_histogram = Histogram(
+    "ad_reward_coefficient",
+    "Recommended reward coefficient by source",
+    ["reward_source"],
+    buckets=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0],
+)
 
 
 class SlidingTTLCache(TTLCache):

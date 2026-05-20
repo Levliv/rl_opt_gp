@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.ab_user_splitter import user_splitter
 from app.ml_tools import state_fe_standart, reward
 from app.models import InitEvent, UserSnapshotActiveState, RewardEvent, AdRewardResponse
-from app.state import contextMAB, ad_prob_model, ad_prob_model_features, session_init_data, GROUPS, SALT
+from app.state import contextMAB, ad_prob_model, ad_prob_model_features, session_init_data, GROUPS, SALT, reward_coefficient_histogram
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
                 f"Snapshot response [ContextMAB]: device={event.appmetrica_device_id}, "
                 f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
             )
-
+            reward_coefficient_histogram.labels(reward_source=reward_source).observe(coefficient)
             return AdRewardResponse(
                 session_id=event.session_id,
                 appmetrica_device_id=event.appmetrica_device_id,
@@ -115,7 +115,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
                 f"session={event.session_id}, minute={event.game_minute}, "
                 f"prob={prob:.4f}, coefficient={coefficient}"
             )
-
+            reward_coefficient_histogram.labels(reward_source="uplift").observe(coefficient)
             return AdRewardResponse(
                 session_id=event.session_id,
                 appmetrica_device_id=event.appmetrica_device_id,
@@ -131,7 +131,7 @@ async def handle_snapshot_event(event: UserSnapshotActiveState):
                 f"Snapshot response [default]: device={event.appmetrica_device_id}, "
                 f"session={event.session_id}, minute={event.game_minute}, coefficient={coefficient}"
             )
-
+            reward_coefficient_histogram.labels(reward_source="default").observe(coefficient)
             return AdRewardResponse(
                 session_id=event.session_id,
                 appmetrica_device_id=event.appmetrica_device_id,
