@@ -48,8 +48,8 @@ clearml_logger = task.get_logger()
 TOKEN = os.environ["YANDEX_TOKEN"]
 APP_ID = "4507258"
 
-date_until = datetime.now().strftime("%Y-%m-%d")
-date_since = (datetime.now() - timedelta(days=params["date_range_days"])).strftime("%Y-%m-%d")
+date_until = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+date_since = (datetime.now() - timedelta(days=params["date_range_days"] + 2)).strftime("%Y-%m-%d")
 
 MODEL_PATH = "/tmp/model_latest.cbm"
 FEATURES_PATH = "/tmp/features_latest.txt"
