@@ -60,6 +60,11 @@ print(f"Training on data from {date_since} to {date_until}")
 
 # --- УТИЛИТЫ ---
 
+def log_df(name, df):
+    print(f"\n=== {name} | shape={df.shape} | nulls={df.isnull().sum().sum()} ===")
+    print(df.dtypes.to_string())
+
+
 def get_appmetrica_logs_robust(table_name, fields, date_since, date_until, max_attempts=30, extra_filters={}):
     url = f"https://api.appmetrica.yandex.ru/logs/v1/export/{table_name}.csv"
     headers = {"Authorization": f"OAuth {TOKEN}", "Accept-Encoding": "gzip"}
@@ -296,9 +301,11 @@ clearml_logger.report_scalar("Data", "raw_rows", value=len(raw_df), iteration=1)
 ad_offer_raw = raw_df[raw_df['event_json'].str.contains('"ad_offer"', na=False)].copy()
 init_raw = raw_df[raw_df['event_json'].str.contains('"init_event"', na=False)].copy()
 active_raw = raw_df[raw_df['event_json'].str.contains('"user_snapshot_active_state"', na=False)].copy()
+print(f"\nРазделение: ad_offer={len(ad_offer_raw)}, init={len(init_raw)}, active={len(active_raw)}")
 
 # Обработка AD_OFFER
 ad_offer_df = parse_metrica_json(ad_offer_raw, "ad_offer")
+log_df("ad_offer_df", ad_offer_df)
 ad_offer_df['ad_offer.recommended_coefficient'] = clean_numeric_column(ad_offer_df['ad_offer.recommended_coefficient'])
 ad_offer_df['ad_offer.recommended_reward'] = clean_numeric_column(ad_offer_df['ad_offer.recommended_reward'])
 ad_offer_df['event_datetime'] = pd.to_datetime(ad_offer_df['event_datetime'])
@@ -312,6 +319,7 @@ ad_offer_df = ad_offer_df[ad_offer_df['appmetrica_device_id'].isin(valid_ids)]
 
 # Обработка INIT_EVENT
 init_df = parse_metrica_json(init_raw, "init_event")
+log_df("init_df", init_df)
 init_df['event_datetime'] = pd.to_datetime(init_df['event_datetime'])
 init_df['init_event.avg_playtime_lifetime'] = clean_numeric_column(init_df['init_event.avg_playtime_lifetime'])
 
@@ -327,6 +335,7 @@ init_df = init_df.rename(columns={'event_datetime': 'session_datetime'})
 
 # Обработка ACTIVE_STATE
 active_df = parse_metrica_json(active_raw, "user_snapshot_active_state")
+log_df("active_df", active_df)
 active_df['event_datetime'] = pd.to_datetime(active_df['event_datetime'])
 
 to_int_active = [
@@ -385,10 +394,11 @@ to_drop = [
 result = result.drop(columns=[c for c in to_drop if c in result.columns])
 result = result[result['ad_offer.recommended_coefficient'] >= 0.5]
 
-print(f"Итоговый размер датасета: {result.shape}")
+log_df("result (после merge и фильтрации)", result)
 clearml_logger.report_scalar("Data", "final_rows", value=len(result), iteration=1)
 
 final_df = create_features(result)
+log_df("final_df (фичи)", final_df)
 
 quality_ok = check_quality_gates(final_df)
 
