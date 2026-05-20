@@ -25,7 +25,7 @@ task.set_packages([
     "clearml",
     "catboost==1.2.5",
     "numpy==1.26.4",
-    "pandas",
+    "pandas==3.0.2",
     "scikit-learn",
     "requests",
     "boto3",
@@ -100,6 +100,7 @@ def clean_numeric_column(series):
 def parse_metrica_json(df, prefix):
     if df.empty:
         return df
+    df = df.dropna(subset=['appmetrica_device_id']).reset_index(drop=True)
     parsed = pd.json_normalize(df['event_json'].apply(json.loads))
     parsed.columns = [f"{prefix}.{c}" if not c.startswith(prefix) else c for c in parsed.columns]
     return pd.concat([df.drop('event_json', axis=1), parsed], axis=1)
