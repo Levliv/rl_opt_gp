@@ -430,7 +430,8 @@ if production:
     prev_tasks = Task.get_tasks(
         project_name="RL Ad Reward",
         task_name=task.name,
-        task_filter={"status": ["completed"], "tags": ["production"]},
+        tags=["production"],
+        task_filter={"status": ["completed"]},
     )
     prev_tasks = [t for t in prev_tasks if t.id != task.id]
     if prev_tasks:
