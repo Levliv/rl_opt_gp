@@ -19,7 +19,8 @@ from clearml import Task
 task = Task.init(
     project_name="RL Ad Reward",
     task_name="Weakly Model Retraining",
-    task_type=Task.TaskTypes.training
+    task_type=Task.TaskTypes.training,
+    output_uri=True,
 )
 task.set_packages([
     "clearml",
