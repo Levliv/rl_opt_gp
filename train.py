@@ -427,6 +427,7 @@ if test_auc < min_roc_auc:
     print(f"Test ROC-AUC {test_auc:.4f} ниже порога {min_roc_auc} — тег 'production' не будет присвоен")
     production = False
 
+prod_auc = None
 if production:
     prev_tasks = Task.get_tasks(
         project_name="RL Ad Reward",
@@ -443,18 +444,17 @@ if production:
                 prod_model = CatBoostClassifier()
                 prod_model.load_model(prod_model_path)
                 prod_auc = roc_auc_score(y_test, prod_model.predict_proba(X_test)[:, 1])
-                print(f"ROC-AUC на одних данных — production: {prod_auc:.5f}, новая: {test_auc:.5f}")
                 clearml_logger.report_scalar("ROC-AUC", "production_on_current_test", value=prod_auc, iteration=1)
                 if test_auc <= prod_auc:
-                    print(f"Новая модель ({test_auc:.4f}) не лучше production ({prod_auc:.4f}) — тег не присваивается")
                     production = False
             else:
                 print("У production задачи нет артефакта модели — пропускаем сравнение")
         except Exception as e:
             print(f"Не удалось сравнить с production моделью: {e} — пропускаем сравнение")
 
+prod_auc_str = f", production ROC-AUC: {prod_auc:.5f}" if prod_auc is not None else ""
 if production:
     task.add_tags(["production"])
-    print(f"\nМодель получила тег 'production'. Test ROC-AUC: {test_auc:.5f}")
+    print(f"\nМодель получила тег 'production'. New ROC-AUC: {test_auc:.5f}{prod_auc_str}")
 else:
-    print(f"\nМодель сохранена без тега 'production'. Test ROC-AUC: {test_auc:.5f}")
+    print(f"\nМодель сохранена без тега 'production'. New ROC-AUC: {test_auc:.5f}{prod_auc_str}")
